@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from crewai import Crew, Task
 
-from ..utils.file_handlers import analyze_csv_structure, compare_csv_structures
+from utils.file_handlers import analyze_csv_structure, compare_csv_structures
+
 from .base_agent import BaseCSVAgent
 
 

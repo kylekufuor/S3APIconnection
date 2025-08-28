@@ -9,7 +9,7 @@ from uuid import UUID
 
 from loguru import logger
 
-from ..models.schemas import JobStatus, OperationMode
+from models.schemas import JobStatus, OperationMode
 
 
 class JobManager:

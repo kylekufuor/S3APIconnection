@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from crewai import LLM, Agent
 from loguru import logger
 
-from ..core.config import settings
+from core.config import settings
 
 
 class BaseCSVAgent(ABC):

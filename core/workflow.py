@@ -6,10 +6,10 @@ from uuid import UUID
 
 from loguru import logger
 
-from ..agents.agent_factory import agent_factory
-from ..core.config import settings
-from ..models.schemas import JobStatus
-from ..utils.job_manager import job_manager
+from agents.agent_factory import agent_factory
+from core.config import settings
+from models.schemas import JobStatus
+from utils.job_manager import job_manager
 
 
 class CSVConversionWorkflow:
@@ -338,7 +338,7 @@ class CSVConversionWorkflow:
             # Get the latest trained script for the client
             from uuid import UUID
 
-            from ..utils.file_handlers import get_latest_user_script
+            from utils.file_handlers import get_latest_user_script
 
             client_uuid = UUID(client_id)
             script_path = get_latest_user_script(client_uuid)
@@ -487,7 +487,7 @@ class CSVConversionWorkflow:
                 if job_data and job_data.get("client_id"):
                     from uuid import UUID
 
-                    from ..utils.file_handlers import save_user_script
+                    from utils.file_handlers import save_user_script
 
                     client_id = UUID(job_data["client_id"])
                     script_path = await save_user_script(result["script_content"], client_id, job_id)
@@ -611,7 +611,7 @@ class CSVConversionWorkflow:
             import subprocess
             from pathlib import Path
 
-            from ..utils.file_handlers import safe_file_path, validate_file_exists
+            from utils.file_handlers import safe_file_path, validate_file_exists
 
             # Prepare the command with temporary output
             input_full_path = Path(settings.upload_dir) / input_file_path

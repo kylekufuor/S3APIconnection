@@ -120,7 +120,7 @@ class TesterAgent(BaseCSVAgent):
             # Execute the script with uv from project root
             from pathlib import Path
 
-            from ..utils.file_handlers import safe_file_path, validate_file_exists
+            from utils.file_handlers import safe_file_path, validate_file_exists
 
             project_root = Path(__file__).parent.parent.parent  # Go up to project root
 

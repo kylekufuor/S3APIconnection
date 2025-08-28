@@ -324,7 +324,7 @@ def cleanup_temp_files(job_id: str) -> None:
     Args:
         job_id: The job ID to clean up files for
     """
-    from ..core.config import settings
+    from core.config import settings
 
     try:
         # Find and remove files matching the job ID pattern
@@ -348,7 +348,7 @@ def ensure_user_directory(client_id: UUID) -> Path:
     Returns:
         Path to the user directory
     """
-    from ..core.config import settings
+    from core.config import settings
 
     user_dir = settings.temp_dir / str(client_id)
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -435,7 +435,7 @@ def get_user_scripts(client_id: UUID) -> List[Dict]:
     Returns:
         List of script information dictionaries
     """
-    from ..core.config import settings
+    from core.config import settings
 
     user_dir = settings.temp_dir / str(client_id)
 
@@ -514,7 +514,7 @@ def list_all_users() -> List[UUID]:
     Returns:
         List of client UUIDs
     """
-    from ..core.config import settings
+    from core.config import settings
 
     users = []
 

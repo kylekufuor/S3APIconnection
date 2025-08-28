@@ -52,11 +52,17 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4"
     openai_temperature: float = 0.1
+
     # Logging Settings
     log_level: str = "INFO"
     log_file: Optional[str] = None
     otel_sdk_disabled: bool = True
     otel_traces_exporter: str = "none"
+
+    # aws settings
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_bucket_name: str = "madular-data-files"
 
     class Config:
         env_file = ".env"

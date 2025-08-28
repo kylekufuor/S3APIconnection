@@ -9,9 +9,9 @@ from uuid import UUID
 import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from ..core.config import settings
-from ..core.workflow import csv_conversion_workflow
-from ..models.schemas import (
+from core.config import settings
+from core.workflow import csv_conversion_workflow
+from models.schemas import (
     ConversionJobRequest,
     ConversionJobResponse,
     ConversionResult,
@@ -24,8 +24,8 @@ from ..models.schemas import (
     OperationMode,
     UserScriptInfo,
 )
-from ..utils.file_handlers import validate_csv_file
-from ..utils.job_manager import job_manager
+from utils.file_handlers import validate_csv_file
+from utils.job_manager import job_manager
 
 router = APIRouter()
 
@@ -293,7 +293,7 @@ async def delete_job(job_id: str) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job not found: {job_id}")
 
     # Clean up temporary files
-    from ..utils.file_handlers import cleanup_temp_files
+    from utils.file_handlers import cleanup_temp_files
 
     cleanup_temp_files(job_id)
 
@@ -319,7 +319,7 @@ async def start_inference_job(request: InferenceJobRequest) -> ConversionJobResp
         )
 
     # Check if client has any trained models
-    from ..utils.file_handlers import get_latest_user_script
+    from utils.file_handlers import get_latest_user_script
 
     latest_script_path = get_latest_user_script(request.client_id)
 
@@ -369,7 +369,7 @@ async def start_inference_job(request: InferenceJobRequest) -> ConversionJobResp
 async def list_users() -> ListUsersResponse:
     """List all users who have generated scripts."""
 
-    from ..utils.file_handlers import list_all_users
+    from utils.file_handlers import list_all_users
 
     users = list_all_users()
 
@@ -387,7 +387,7 @@ async def list_user_scripts(client_id: UUID) -> ListUserScriptsResponse:
 
     from datetime import datetime, timezone
 
-    from ..utils.file_handlers import get_user_scripts
+    from utils.file_handlers import get_user_scripts
 
     scripts_data = get_user_scripts(client_id)
 
