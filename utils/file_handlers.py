@@ -1,13 +1,20 @@
 """File handling utilities for CSV validation and processing."""
 
 import asyncio
+import base64
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
-from uuid import UUID
+from urllib.parse import urlparse
 
 import aiofiles  # type: ignore
+import boto3
 import pandas as pd  # type: ignore
+from botocore.exceptions import ClientError
 from loguru import logger
+
+from core.config import settings
+from models.schemas import JobMetadata
 
 
 async def validate_csv_file(file_path: Path) -> Tuple[bool, Optional[str]]:
@@ -300,10 +307,10 @@ async def compare_csv_structures(input_path: Path, expected_output_path: Path) -
         common_cols = input_cols & output_cols
         dtype_changes = {}
         for col in common_cols:
-            if input_structure["dtypes"][col] != output_structure["dtypes"][col]:
+            if input_structure["dtypes"].get(col) != output_structure["dtypes"].get(col):
                 dtype_changes[col] = {
-                    "input_type": input_structure["dtypes"][col],
-                    "output_type": output_structure["dtypes"][col],
+                    "input_type": input_structure["dtypes"].get(col),
+                    "output_type": output_structure["dtypes"].get(col),
                 }
 
         if dtype_changes:
@@ -338,12 +345,12 @@ def cleanup_temp_files(job_id: str) -> None:
         logger.error(f"Error cleaning up temp files for job {job_id}: {str(e)}")
 
 
-def ensure_user_directory(client_id: UUID) -> Path:
+def ensure_user_directory(client_id: str) -> Path:
     """
     Ensure that a user-specific directory exists.
 
     Args:
-        client_id: The client UUID
+        client_id: The client ID
 
     Returns:
         Path to the user directory
@@ -357,41 +364,41 @@ def ensure_user_directory(client_id: UUID) -> Path:
     return user_dir
 
 
-async def save_user_script(script_content: str, client_id: UUID, job_id: str) -> Path:
+async def save_user_script(script_content: str, client_id: str, job_id: str) -> str:
     """
-    Save a generated Python script to the user's directory with job-based naming.
-    This function overwrites any existing script for the same job to ensure only
-    the final successful script is kept across improvement cycles.
+    Save a generated Python script to S3 and update the job metadata.
 
     Args:
         script_content: The Python script content
-        client_id: The client UUID
+        client_id: The client ID (user_id)
         job_id: The job ID for reference
 
     Returns:
-        Path to the saved script file
+        The S3 path to the saved script file
     """
-    # Ensure user directory exists
-    user_dir = ensure_user_directory(client_id)
-
-    # Use job_id based filename instead of timestamp to ensure consistent naming
-    # This ensures the same file is overwritten in each improvement cycle
-    script_name = f"generatedScript_{job_id}_{client_id}.py"
-    script_path = user_dir / script_name
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    user_id = str(client_id)
+    script_name = f"generatedScript_{job_id}.py"
+    script_path = f"{user_id}/{job_id}/script/{script_name}"
 
     try:
-        # Clean up any old script files for this job (in case naming convention changed)
-        await _cleanup_old_job_scripts(user_dir, job_id, script_name)
+        s3_client.put_object(Bucket=bucket_name, Key=script_path, Body=script_content.encode("utf-8"))
+        logger.info(f"Saved user script to S3: {script_path}")
 
-        # Write/overwrite the script file
-        async with aiofiles.open(script_path, "w") as f:
-            await f.write(script_content)
+        # Update job metadata with script path
+        job_metadata_path = f"{user_id}/{job_id}/job_metadata.json"
+        response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
+        metadata_content = response["Body"].read().decode("utf-8")
+        metadata = JobMetadata.parse_raw(metadata_content)
 
-        logger.info(f"Saved user script (overwriting any previous cycles): {script_path}")
+        metadata.script_path = script_path
+        await save_job_metadata_to_s3(metadata, user_id, job_id)
+
         return script_path
 
-    except Exception as e:
-        logger.error(f"Error saving user script: {str(e)}")
+    except ClientError as e:
+        logger.error(f"Error saving user script to S3: {e}")
         raise
 
 
@@ -425,12 +432,12 @@ async def _cleanup_old_job_scripts(user_dir: Path, job_id: str, current_script_n
         # Don't fail the main operation if cleanup fails
 
 
-def get_user_scripts(client_id: UUID) -> List[Dict]:
+def get_user_scripts(client_id: str) -> List[Dict]:
     """
     Get all scripts for a specific user, sorted by creation time.
 
     Args:
-        client_id: The client UUID
+        client_id: The client ID
 
     Returns:
         List of script information dictionaries
@@ -486,12 +493,12 @@ def get_user_scripts(client_id: UUID) -> List[Dict]:
     return scripts
 
 
-def get_latest_user_script(client_id: UUID) -> Optional[Path]:
+def get_latest_user_script(client_id: str) -> Optional[Path]:
     """
     Get the latest script for a specific user.
 
     Args:
-        client_id: The client UUID
+        client_id: The client ID
 
     Returns:
         Path to the latest script file, or None if no scripts found
@@ -507,12 +514,12 @@ def get_latest_user_script(client_id: UUID) -> Optional[Path]:
     return latest_script_path
 
 
-def list_all_users() -> List[UUID]:
+def list_all_users() -> List[str]:
     """
     List all users who have generated scripts.
 
     Returns:
-        List of client UUIDs
+        List of client IDs
     """
     from core.config import settings
 
@@ -521,15 +528,7 @@ def list_all_users() -> List[UUID]:
     try:
         for user_dir in settings.temp_dir.iterdir():
             if user_dir.is_dir():
-                try:
-                    # Try to parse directory name as UUID
-                    user_uuid = UUID(user_dir.name)
-                    # Check if user has any scripts
-                    if any(user_dir.glob("generatedScript_*.py")):
-                        users.append(user_uuid)
-                except ValueError:
-                    # Skip directories that are not valid UUIDs
-                    continue
+                users.append(user_dir.name)
 
         logger.info(f"Found {len(users)} users with scripts")
 
@@ -537,8 +536,7 @@ def list_all_users() -> List[UUID]:
         logger.error(f"Error listing users: {str(e)}")
         return []
 
-    return sorted(users, key=str)
-
+    return sorted(users)
 
 def safe_file_path(file_path: Path) -> str:
     """
@@ -551,7 +549,6 @@ def safe_file_path(file_path: Path) -> str:
         String representation safe for subprocess calls
     """
     return str(file_path.resolve())
-
 
 def validate_file_exists(file_path: Path, file_type: str = "file") -> tuple[bool, str]:
     """
@@ -576,3 +573,102 @@ def validate_file_exists(file_path: Path, file_type: str = "file") -> tuple[bool
         return True, ""
     except (OSError, IOError):
         return False, f"{file_type.title()} file is not readable: {file_path}"
+
+def get_s3_client():
+    """Get a boto3 S3 client."""
+    return boto3.client(
+        "s3",
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+
+def s3_folder_exists(s3_client, bucket_name, folder_path):
+    """Check if a folder exists in S3."""
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_path)
+        return "Contents" in response
+    except ClientError as e:
+        logger.error(f"Error checking S3 folder: {e}")
+        return False
+
+def create_s3_folders(user_id: str, job_id: str):
+    """Create the folder structure in S3 for a job."""
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+
+    base_path = f"{user_id}/{job_id}/"
+    folders_to_create = ["input/", "output/", "script/"]
+
+    for folder in folders_to_create:
+        folder_path = f"{base_path}{folder}"
+        if not s3_folder_exists(s3_client, bucket_name, folder_path):
+            try:
+                s3_client.put_object(Bucket=bucket_name, Key=folder_path)
+                logger.info(f"Created S3 folder: {folder_path}")
+            except ClientError as e:
+                logger.error(f"Error creating S3 folder: {e}")
+                raise
+
+
+async def upload_to_s3(source: str, s3_path: str):
+    """Upload a file to S3 from a URL, local path, or base64 string."""
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+
+    try:
+        if source.startswith("s3://"):
+            # It's already an S3 path, so we might need to copy it
+            # For simplicity, we'll just log it for now
+            logger.info(f"Source is already in S3: {source}")
+            return
+        elif source.startswith("http://") or source.startswith("https://"):
+            # Handle URL
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(source)
+                response.raise_for_status()
+                s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=response.content)
+        elif ";base64," in source:
+            # Handle base64 string
+            header, encoded = source.split(",", 1)
+            data = base64.b64decode(encoded)
+            s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=data)
+        else:
+            # Handle local file path
+            with open(source, "rb") as f:
+                s3_client.upload_fileobj(f, bucket_name, s3_path)
+
+        logger.info(f"Uploaded file to S3: {s3_path}")
+
+    except ClientError as e:
+        logger.error(f"Error uploading to S3: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during S3 upload: {e}")
+        raise
+
+
+async def save_job_metadata_to_s3(metadata: JobMetadata, user_id: str, job_id: str):
+    """Save the job metadata to a JSON file in S3."""
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    metadata_path = f"{user_id}/{job_id}/job_metadata.json"
+
+    try:
+        s3_client.put_object(Bucket=bucket_name, Key=metadata_path, Body=metadata.model_dump_json(indent=2))
+        logger.info(f"Saved job metadata to S3: {metadata_path}")
+    except ClientError as e:
+        logger.error(f"Error saving job metadata to S3: {e}")
+        raise
+
+def download_from_s3(s3_path: str, local_path: Path):
+    """Download a file from S3 to a local path."""
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    try:
+        s3_client.download_file(bucket_name, s3_path, str(local_path))
+        logger.info(f"Downloaded file from S3: {s3_path} to {local_path}")
+    except ClientError as e:
+        logger.error(f"Error downloading from S3: {e}")
+        raise

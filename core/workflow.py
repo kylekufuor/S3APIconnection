@@ -1,14 +1,15 @@
 """Main workflow orchestration for CSV conversion using CrewAI agents."""
 
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from loguru import logger
 
 from agents.agent_factory import agent_factory
 from core.config import settings
 from models.schemas import JobStatus
+from utils.file_handlers import download_from_s3
 from utils.job_manager import job_manager
 
 
@@ -22,7 +23,7 @@ class CSVConversionWorkflow:
 
     async def execute_conversion_job(
         self,
-        job_id: UUID,
+        job_id: str,
         input_file_path: str,
         expected_output_file_path: Optional[str] = None,
         job_description: Optional[str] = None,
@@ -42,274 +43,299 @@ class CSVConversionWorkflow:
         Returns:
             Dictionary containing the final result of the conversion
         """
-        job_id_str = str(job_id)
+        job_id_str = job_id
         self.logger.info(f"Starting conversion job {job_id_str}")
 
-        # Get job data to determine mode
-        job_data = await self.job_manager.get_job(job_id_str)
-        if not job_data:
-            error_msg = f"Job {job_id_str} not found"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg, "status": JobStatus.FAILED}
+        local_input_path = None
+        local_expected_output_path = None
+        temp_dir = None
 
-        job_mode = job_data.get("mode", "training")
+        try:
+            if use_full_paths and input_file_path.startswith(f"s3://{settings.aws_bucket_name}"):
+                temp_dir = tempfile.TemporaryDirectory()
+                temp_dir_path = Path(temp_dir.name)
 
-        # For inference mode, delegate to the dedicated inference method
-        if job_mode == "inference":
-            client_id = job_data.get("client_id")
-            if not client_id:
-                error_msg = f"Client ID required for inference job {job_id_str}"
-                await self._handle_job_failure(job_id_str, "Missing client ID", error_msg)
+                # Download input file
+                local_input_path = temp_dir_path / "input.csv"
+                s3_input_key = "/".join(input_file_path.split("/")[3:])
+                download_from_s3(s3_input_key, local_input_path)
+                input_file_path = str(local_input_path)
+
+                # Download expected output file
+                if expected_output_file_path:
+                    local_expected_output_path = temp_dir_path / "expected_output.csv"
+                    s3_expected_output_key = "/".join(expected_output_file_path.split("/")[3:])
+                    download_from_s3(s3_expected_output_key, local_expected_output_path)
+                    expected_output_file_path = str(local_expected_output_path)
+
+            # Get job data to determine mode
+            job_data = await self.job_manager.get_job(job_id_str)
+            if not job_data:
+                error_msg = f"Job {job_id_str} not found"
+                self.logger.error(error_msg)
                 return {"success": False, "error": error_msg, "status": JobStatus.FAILED}
 
-            return await self.execute_inference_job(job_id, input_file_path, str(client_id), job_description)
+            job_mode = job_data.get("mode", "training")
 
-        max_cycles = 5  # Allow up to 5 improvement cycles
-        current_cycle = 0
-        previous_attempts: List[Dict[str, Any]] = []
-        agent_feedback: Dict[str, Any] = {}
+            # For inference mode, delegate to the dedicated inference method
+            if job_mode == "inference":
+                client_id = job_data.get("client_id")
+                if not client_id:
+                    error_msg = f"Client ID required for inference job {job_id_str}"
+                    await self._handle_job_failure(job_id_str, "Missing client ID", error_msg)
+                    return {"success": False, "error": error_msg, "status": JobStatus.FAILED}
 
-        # Initialize result variables to prevent UnboundLocalError
-        planner_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
-        coder_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
-        tester_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
+                return await self.execute_inference_job(job_id, input_file_path, client_id, job_description)
 
-        while current_cycle < max_cycles:
-            current_cycle += 1
-            self.logger.info(f"Starting improvement cycle {current_cycle} of {max_cycles}")
+            max_cycles = 5  # Allow up to 5 improvement cycles
+            current_cycle = 0
+            previous_attempts: List[Dict[str, Any]] = []
+            agent_feedback: Dict[str, Any] = {}
 
-            try:
-                # Update job status to planning phase
-                await self.job_manager.update_job_status(
-                    job_id_str,
-                    JobStatus.PLANNING,
-                    current_step=f"Planning Phase (Cycle {current_cycle})",
-                    progress_details={"phase": "analysis", "step": 1, "total_steps": 3, "cycle": current_cycle},
-                )
+            # Initialize result variables to prevent UnboundLocalError
+            planner_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
+            coder_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
+            tester_result: Dict[str, Any] = {"success": False, "error": "Not executed"}
 
-                # Step 1: Execute Planner Agent with feedback
-                planner_result = await self._execute_planner_phase(
-                    job_id_str,
-                    input_file_path,
-                    expected_output_file_path,
-                    job_description,
-                    general_instructions,
-                    column_instructions,
-                    previous_attempts,
-                    agent_feedback,
-                    use_full_paths,
-                )
+            while current_cycle < max_cycles:
+                current_cycle += 1
+                self.logger.info(f"Starting improvement cycle {current_cycle} of {max_cycles}")
 
-                if not planner_result["success"]:
-                    # Do not hard-stop; capture feedback and continue to next cycle
-                    attempt_result = {
-                        "planner_result": planner_result,
-                        "coder_result": None,
-                        "tester_result": None,
-                        "cycle": current_cycle,
-                    }
-                    previous_attempts.append(attempt_result)
+                try:
+                    # Update job status to planning phase
+                    await self.job_manager.update_job_status(
+                        job_id_str,
+                        JobStatus.PLANNING,
+                        current_step=f"Planning Phase (Cycle {current_cycle})",
+                        progress_details={"phase": "analysis", "step": 1, "total_steps": 3, "cycle": current_cycle},
+                    )
 
-                    error_msg = planner_result.get("error", "Unknown planning error")
-                    agent_feedback["coder_feedback"] = [
-                        {
-                            "issue_type": "planning_error",
-                            "suggestion": f"Planning failed: {error_msg}",
-                            "error_details": error_msg,
+                    # Step 1: Execute Planner Agent with feedback
+                    planner_result = await self._execute_planner_phase(
+                        job_id_str,
+                        input_file_path,
+                        expected_output_file_path,
+                        job_description,
+                        general_instructions,
+                        column_instructions,
+                        previous_attempts,
+                        agent_feedback,
+                        use_full_paths,
+                    )
+
+                    if not planner_result["success"]:
+                        # Do not hard-stop; capture feedback and continue to next cycle
+                        attempt_result = {
+                            "planner_result": planner_result,
+                            "coder_result": None,
+                            "tester_result": None,
+                            "cycle": current_cycle,
                         }
-                    ]
+                        previous_attempts.append(attempt_result)
 
-                    if current_cycle < max_cycles:
-                        await self.job_manager.update_job_status(
-                            job_id_str,
-                            JobStatus.PENDING,
-                            current_step=f"Retry planning (Cycle {current_cycle + 1})",
-                            progress_details={"phase": "improvement", "cycle": current_cycle + 1},
-                        )
-                        continue
-                    else:
-                        await self._handle_job_failure(job_id_str, "Planning failed", error_msg)
-                        final_status = JobStatus.FAILED
-                        success = False
-                        break
-
-                # Step 2: Execute Coder Agent with feedback
-                await self.job_manager.update_job_status(
-                    job_id_str,
-                    JobStatus.CODING,
-                    current_step=f"Coding Phase (Cycle {current_cycle})",
-                    progress_details={"phase": "generation", "step": 2, "total_steps": 3, "cycle": current_cycle},
-                )
-
-                coder_result = await self._execute_coder_phase(
-                    job_id_str,
-                    planner_result,
-                    input_file_path,
-                    job_description,
-                    general_instructions,
-                    column_instructions,
-                    agent_feedback,
-                    use_full_paths,
-                )
-
-                if not coder_result["success"]:
-                    # Do not hard-stop; capture feedback and continue to next cycle
-                    attempt_result = {
-                        "planner_result": planner_result,
-                        "coder_result": coder_result,
-                        "tester_result": None,
-                        "cycle": current_cycle,
-                    }
-                    previous_attempts.append(attempt_result)
-
-                    error_msg = coder_result.get("error", "Unknown code generation error")
-                    agent_feedback["coder_feedback"] = [
-                        {
-                            "issue_type": "generation_error",
-                            "suggestion": f"Code generation failed: {error_msg}",
-                            "error_details": error_msg,
-                        }
-                    ]
-
-                    if current_cycle < max_cycles:
-                        await self.job_manager.update_job_status(
-                            job_id_str,
-                            JobStatus.PENDING,
-                            current_step=f"Improving based on coder error (Cycle {current_cycle + 1})",
-                            progress_details={"phase": "improvement", "cycle": current_cycle + 1},
-                        )
-                        continue
-                    else:
-                        await self._handle_job_failure(job_id_str, "Code generation failed", error_msg)
-                        final_status = JobStatus.FAILED
-                        success = False
-                        break
-
-                # Step 3: Execute Tester Agent
-                await self.job_manager.update_job_status(
-                    job_id_str,
-                    JobStatus.TESTING,
-                    current_step=f"Testing Phase (Cycle {current_cycle})",
-                    progress_details={"phase": "validation", "step": 3, "total_steps": 3, "cycle": current_cycle},
-                )
-
-                tester_result = await self._execute_tester_phase(
-                    job_id_str, coder_result, input_file_path, expected_output_file_path, use_full_paths
-                )
-
-                # Determine if we need another improvement cycle
-                if tester_result and tester_result["success"] and tester_result.get("test_passed", False):
-                    await self._handle_job_completion(job_id_str, planner_result, coder_result, tester_result)
-                    final_status = JobStatus.COMPLETED
-                    success = True
-                    break  # Success, exit improvement cycles
-                else:
-                    # Store this attempt for learning
-                    attempt_result = {
-                        "planner_result": planner_result,
-                        "coder_result": coder_result,
-                        "tester_result": tester_result,
-                        "cycle": current_cycle,
-                    }
-                    previous_attempts.append(attempt_result)
-
-                    # Extract feedback for next cycle - handle both execution errors and test failures
-                    feedback_for_coder = []
-
-                    if tester_result:
-                        if not tester_result["success"]:
-                            # Script execution failed - extract error for coder
-                            error_msg = tester_result.get("error", "Script execution failed")
-                            feedback_for_coder.append(
-                                {
-                                    "issue_type": "execution_error",
-                                    "suggestion": f"Fix script execution error: {error_msg}",
-                                    "error_details": error_msg,
-                                }
-                            )
-                            # Include tester-proposed fix suggestions if provided
-                            extra_feedback = tester_result.get("feedback_for_coder")
-                            if isinstance(extra_feedback, list) and extra_feedback:
-                                feedback_for_coder.extend(extra_feedback)
-                        elif "comparison_result" in tester_result:
-                            # Test passed but output doesn't match - extract comparison feedback
-                            comparison = tester_result["comparison_result"]
-                            feedback_for_coder = comparison.get("feedback_for_coder", [])
-
-                            if feedback_for_coder:
-                                agent_feedback["coder_feedback"] = feedback_for_coder
-                                agent_feedback["test_report"] = tester_result.get("test_report", "")
-                                self.logger.info(f"Extracted feedback for next cycle: {len(feedback_for_coder)} items")
-                    else:
-                        # Tester phase failed completely
-                        feedback_for_coder.append(
+                        error_msg = planner_result.get("error", "Unknown planning error")
+                        agent_feedback["coder_feedback"] = [
                             {
-                                "issue_type": "tester_failure",
-                                "suggestion": "Tester phase failed - check script syntax and dependencies",
-                                "error_details": "Tester phase failed to execute",
+                                "issue_type": "planning_error",
+                                "suggestion": f"Planning failed: {error_msg}",
+                                "error_details": error_msg,
                             }
-                        )
+                        ]
 
-                    if feedback_for_coder:
-                        agent_feedback["coder_feedback"] = feedback_for_coder
-                        if tester_result and "test_report" in tester_result:
-                            agent_feedback["test_report"] = tester_result.get("test_report", "")
-
-                        # Continue to next improvement cycle
                         if current_cycle < max_cycles:
                             await self.job_manager.update_job_status(
                                 job_id_str,
                                 JobStatus.PENDING,
-                                current_step=f"Improving based on feedback (Cycle {current_cycle + 1})",
+                                current_step=f"Retry planning (Cycle {current_cycle + 1})",
                                 progress_details={"phase": "improvement", "cycle": current_cycle + 1},
                             )
                             continue
+                        else:
+                            await self._handle_job_failure(job_id_str, "Planning failed", error_msg)
+                            final_status = JobStatus.FAILED
+                            success = False
+                            break
 
-                    # If no feedback or max cycles reached, fail the job
-                    error_msg = (
-                        "Testing failed"
-                        if tester_result and tester_result["success"]
-                        else tester_result.get("error", "Unknown testing error")
-                        if tester_result
-                        else "Tester phase failed"
+                    # Step 2: Execute Coder Agent with feedback
+                    await self.job_manager.update_job_status(
+                        job_id_str,
+                        JobStatus.CODING,
+                        current_step=f"Coding Phase (Cycle {current_cycle})",
+                        progress_details={"phase": "generation", "step": 2, "total_steps": 3, "cycle": current_cycle},
                     )
-                    await self._handle_job_failure(
-                        job_id_str, error_msg, tester_result.get("error") if tester_result else "Tester phase failed"
+
+                    coder_result = await self._execute_coder_phase(
+                        job_id_str,
+                        planner_result,
+                        input_file_path,
+                        job_description,
+                        general_instructions,
+                        column_instructions,
+                        agent_feedback,
+                        use_full_paths,
                     )
-                    final_status = JobStatus.FAILED
-                    success = False
-                    break
 
-            except Exception as e:
-                error_msg = f"Unexpected error in conversion workflow: {str(e)}"
-                self.logger.error(error_msg)
-                await self._handle_job_failure(job_id_str, "Workflow error", error_msg)
-                return {"job_id": job_id, "success": False, "status": JobStatus.FAILED, "error": error_msg}
+                    if not coder_result["success"]:
+                        # Do not hard-stop; capture feedback and continue to next cycle
+                        attempt_result = {
+                            "planner_result": planner_result,
+                            "coder_result": coder_result,
+                            "tester_result": None,
+                            "cycle": current_cycle,
+                        }
+                        previous_attempts.append(attempt_result)
 
-        # Compile final result
-        final_result = {
-            "job_id": job_id,
-            "success": success,
-            "status": final_status,
-            "planner_result": planner_result,
-            "coder_result": coder_result,
-            "tester_result": tester_result,
-            "generated_script": coder_result.get("script_content")
-            if coder_result and coder_result["success"]
-            else None,
-            "test_passed": tester_result.get("test_passed", False)
-            if tester_result and tester_result["success"]
-            else False,
-            "cycles": current_cycle,
-        }
+                        error_msg = coder_result.get("error", "Unknown code generation error")
+                        agent_feedback["coder_feedback"] = [
+                            {
+                                "issue_type": "generation_error",
+                                "suggestion": f"Code generation failed: {error_msg}",
+                                "error_details": error_msg,
+                            }
+                        ]
 
-        self.logger.info(
-            f"Conversion job {job_id_str} completed with status: {final_status} after {current_cycle} cycles"
-        )
-        return final_result
+                        if current_cycle < max_cycles:
+                            await self.job_manager.update_job_status(
+                                job_id_str,
+                                JobStatus.PENDING,
+                                current_step=f"Improving based on coder error (Cycle {current_cycle + 1})",
+                                progress_details={"phase": "improvement", "cycle": current_cycle + 1},
+                            )
+                            continue
+                        else:
+                            await self._handle_job_failure(job_id_str, "Code generation failed", error_msg)
+                            final_status = JobStatus.FAILED
+                            success = False
+                            break
+
+                    # Step 3: Execute Tester Agent
+                    await self.job_manager.update_job_status(
+                        job_id_str,
+                        JobStatus.TESTING,
+                        current_step=f"Testing Phase (Cycle {current_cycle})",
+                        progress_details={"phase": "validation", "step": 3, "total_steps": 3, "cycle": current_cycle},
+                    )
+
+                    tester_result = await self._execute_tester_phase(
+                        job_id_str, coder_result, input_file_path, expected_output_file_path, use_full_paths
+                    )
+
+                    # Determine if we need another improvement cycle
+                    if tester_result and tester_result["success"] and tester_result.get("test_passed", False):
+                        await self._handle_job_completion(job_id_str, planner_result, coder_result, tester_result)
+                        final_status = JobStatus.COMPLETED
+                        success = True
+                        break  # Success, exit improvement cycles
+                    else:
+                        # Store this attempt for learning
+                        attempt_result = {
+                            "planner_result": planner_result,
+                            "coder_result": coder_result,
+                            "tester_result": tester_result,
+                            "cycle": current_cycle,
+                        }
+                        previous_attempts.append(attempt_result)
+
+                        # Extract feedback for next cycle - handle both execution errors and test failures
+                        feedback_for_coder = []
+
+                        if tester_result:
+                            if not tester_result["success"]:
+                                # Script execution failed - extract error for coder
+                                error_msg = tester_result.get("error", "Script execution failed")
+                                feedback_for_coder.append(
+                                    {
+                                        "issue_type": "execution_error",
+                                        "suggestion": f"Fix script execution error: {error_msg}",
+                                        "error_details": error_msg,
+                                    }
+                                )
+                                # Include tester-proposed fix suggestions if provided
+                                extra_feedback = tester_result.get("feedback_for_coder")
+                                if isinstance(extra_feedback, list) and extra_feedback:
+                                    feedback_for_coder.extend(extra_feedback)
+                            elif "comparison_result" in tester_result:
+                                # Test passed but output doesn't match - extract comparison feedback
+                                comparison = tester_result["comparison_result"]
+                                feedback_for_coder = comparison.get("feedback_for_coder", [])
+
+                                if feedback_for_coder:
+                                    agent_feedback["coder_feedback"] = feedback_for_coder
+                                    agent_feedback["test_report"] = tester_result.get("test_report", "")
+                                    self.logger.info(f"Extracted feedback for next cycle: {len(feedback_for_coder)} items")
+                        else:
+                            # Tester phase failed completely
+                            feedback_for_coder.append(
+                                {
+                                    "issue_type": "tester_failure",
+                                    "suggestion": "Tester phase failed - check script syntax and dependencies",
+                                    "error_details": "Tester phase failed to execute",
+                                }
+                            )
+
+                        if feedback_for_coder:
+                            agent_feedback["coder_feedback"] = feedback_for_coder
+                            if tester_result and "test_report" in tester_result:
+                                agent_feedback["test_report"] = tester_result.get("test_report", "")
+
+                            # Continue to next improvement cycle
+                            if current_cycle < max_cycles:
+                                await self.job_manager.update_job_status(
+                                    job_id_str,
+                                    JobStatus.PENDING,
+                                    current_step=f"Improving based on feedback (Cycle {current_cycle + 1})",
+                                    progress_details={"phase": "improvement", "cycle": current_cycle + 1},
+                                )
+                                continue
+
+                        # If no feedback or max cycles reached, fail the job
+                        error_msg = (
+                            "Testing failed"
+                            if tester_result and tester_result["success"]
+                            else tester_result.get("error", "Unknown testing error")
+                            if tester_result
+                            else "Tester phase failed"
+                        )
+                        await self._handle_job_failure(
+                            job_id_str, error_msg, tester_result.get("error") if tester_result else "Tester phase failed"
+                        )
+                        final_status = JobStatus.FAILED
+                        success = False
+                        break
+
+                except Exception as e:
+                    error_msg = f"Unexpected error in conversion workflow: {str(e)}"
+                    self.logger.error(error_msg)
+                    await self._handle_job_failure(job_id_str, "Workflow error", error_msg)
+                    return {"job_id": job_id, "success": False, "status": JobStatus.FAILED, "error": error_msg}
+
+            # Compile final result
+            final_result = {
+                "job_id": job_id,
+                "success": success,
+                "status": final_status,
+                "planner_result": planner_result,
+                "coder_result": coder_result,
+                "tester_result": tester_result,
+                "generated_script": coder_result.get("script_content")
+                if coder_result and coder_result["success"]
+                else None,
+                "test_passed": tester_result.get("test_passed", False)
+                if tester_result and tester_result["success"]
+                else False,
+                "cycles": current_cycle,
+            }
+
+            self.logger.info(
+                f"Conversion job {job_id_str} completed with status: {final_status} after {current_cycle} cycles"
+            )
+            return final_result
+        finally:
+            if temp_dir:
+                temp_dir.cleanup()
 
     async def execute_inference_job(
-        self, job_id: UUID, input_file_path: str, client_id: str, job_description: Optional[str] = None
+        self, job_id: str, input_file_path: str, client_id: str, job_description: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute an inference job using a previously trained model.
@@ -323,7 +349,7 @@ class CSVConversionWorkflow:
         Returns:
             Dictionary containing the final result of the inference
         """
-        job_id_str = str(job_id)
+        job_id_str = job_id
         self.logger.info(f"Starting inference job {job_id_str} for client {client_id}")
 
         try:
@@ -336,12 +362,9 @@ class CSVConversionWorkflow:
             )
 
             # Get the latest trained script for the client
-            from uuid import UUID
-
             from utils.file_handlers import get_latest_user_script
 
-            client_uuid = UUID(client_id)
-            script_path = get_latest_user_script(client_uuid)
+            script_path = get_latest_user_script(client_id)
 
             if not script_path:
                 error_msg = f"No trained model found for client {client_id}"
@@ -393,7 +416,13 @@ class CSVConversionWorkflow:
         try:
             planner_agent = self.agent_factory.get_planner_agent()
 
-            if use_full_paths:
+            if use_full_paths and not input_file_path.startswith("/"):
+                # Assuming S3 paths are passed, which are now local
+                resolved_input_path = str(Path(input_file_path).resolve())
+                resolved_expected_path = (
+                    str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
+                )
+            elif use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
                 resolved_expected_path = (
                     str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
@@ -459,7 +488,10 @@ class CSVConversionWorkflow:
         try:
             coder_agent = self.agent_factory.get_coder_agent()
 
-            if use_full_paths:
+            if use_full_paths and not input_file_path.startswith("/"):
+                # Assuming S3 paths are passed, which are now local
+                resolved_input_path = str(Path(input_file_path).resolve())
+            elif use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
             else:
                 resolved_input_path = str((Path(settings.upload_dir) / input_file_path).resolve())
@@ -485,24 +517,22 @@ class CSVConversionWorkflow:
                 # Get job data to extract client_id
                 job_data = await self.job_manager.get_job(job_id)
                 if job_data and job_data.get("client_id"):
-                    from uuid import UUID
-
                     from utils.file_handlers import save_user_script
 
-                    client_id = UUID(job_data["client_id"])
+                    client_id = job_data["client_id"]
                     script_path = await save_user_script(result["script_content"], client_id, job_id)
 
                     # Save to job manager with script path
                     await self.job_manager.set_generated_script(job_id, result["script_content"], str(script_path))
-                    result["generated_script_path"] = str(script_path.resolve())
+                    result["generated_script_path"] = str(script_path)
                 else:
                     # Fallback to original method if no client_id
                     from uuid import uuid4
 
-                    temp_client_id = uuid4()
+                    temp_client_id = str(uuid4())
                     script_path = await save_user_script(result["script_content"], temp_client_id, job_id)
                     await self.job_manager.set_generated_script(job_id, result["script_content"], str(script_path))
-                    result["generated_script_path"] = str(script_path.resolve())
+                    result["generated_script_path"] = str(script_path)
 
             # Add agent result to job
             await self.job_manager.add_agent_result(
@@ -536,7 +566,7 @@ class CSVConversionWorkflow:
     ) -> Dict[str, Any]:
         """Execute the testing phase."""
         self.logger.info(f"Executing tester phase for job {job_id}")
-
+        temp_dir_tester = None
         try:
             tester_agent = self.agent_factory.get_tester_agent()
 
@@ -546,7 +576,24 @@ class CSVConversionWorkflow:
                 self.logger.error(error_msg)
                 return {"success": False, "error": error_msg}
 
-            if use_full_paths:
+            generated_script_path = coder_result["generated_script_path"]
+            local_script_path = None
+
+            if use_full_paths and generated_script_path.startswith(f"s3://{settings.aws_bucket_name}"):
+                temp_dir_tester = tempfile.TemporaryDirectory()
+                temp_dir_path = Path(temp_dir_tester.name)
+                local_script_path = temp_dir_path / "generated_script.py"
+                s3_script_key = "/".join(generated_script_path.split("/")[3:])
+                download_from_s3(s3_script_key, local_script_path)
+                generated_script_path = str(local_script_path)
+
+            if use_full_paths and not input_file_path.startswith("/"):
+                # Assuming S3 paths are passed, which are now local
+                resolved_input_path = str(Path(input_file_path).resolve())
+                resolved_expected_path = (
+                    str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
+                )
+            elif use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
                 resolved_expected_path = (
                     str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
@@ -560,7 +607,7 @@ class CSVConversionWorkflow:
                 )
 
             task_data = {
-                "generated_script_path": coder_result["generated_script_path"],
+                "generated_script_path": generated_script_path,
                 "input_file_path": resolved_input_path,
                 "expected_output_file_path": resolved_expected_path,
                 "job_id": job_id,
@@ -600,6 +647,9 @@ class CSVConversionWorkflow:
             await self.job_manager.add_agent_result(job_id, "Tester", False, error=error_msg)
 
             return {"success": False, "error": error_msg}
+        finally:
+            if temp_dir_tester:
+                temp_dir_tester.cleanup()
 
     async def _execute_inference_phase(
         self, job_id: str, script_path: Path, input_file_path: str, job_description: Optional[str]

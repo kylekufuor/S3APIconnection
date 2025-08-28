@@ -1,10 +1,10 @@
 """API routes for the CSV converter application."""
 
 import asyncio
+import logging
 import uuid
 from pathlib import Path
 from typing import List
-from uuid import UUID
 
 import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -23,13 +23,66 @@ from models.schemas import (
     ListUsersResponse,
     OperationMode,
     UserScriptInfo,
+    TrainingJobRequest,
 )
 from utils.file_handlers import validate_csv_file
 from utils.job_manager import job_manager
 
 router = APIRouter()
-
+logger = logging.getLogger(__name__)
 # Note: Job storage is now handled by the JobManager
+
+
+@router.post(
+    "/train",
+    response_model=ConversionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start Training Job",
+    description="Starts a new training job, uploads files to S3, and kicks off the conversion workflow.",
+)
+async def start_training_job(request: TrainingJobRequest) -> ConversionJobResponse:
+    """
+    Starts a new training job:
+    1. Creates a job with a unique ID.
+    2. Sets up the necessary folder structure in S3.
+    3. Uploads the input and expected output files to S3.
+    4. Kicks off the background processing workflow.
+    5. Returns the job information.
+    """
+    try:
+        # Create and manage the job using the job manager
+        job_data = await job_manager.create_training_job(request)
+        job_id = job_data["job_id"]
+
+        # Start the CrewAI workflow in the background
+        asyncio.create_task(
+            csv_conversion_workflow.execute_conversion_job(
+                job_id,
+                input_file_path=job_data["input_file"],
+                expected_output_file_path=job_data["expected_output_file"],
+                job_description=request.description,
+                general_instructions=request.general_instructions,
+                column_instructions=request.column_instructions,
+                use_full_paths=True,  # We are using full S3 paths
+            )
+        )
+
+        return ConversionJobResponse(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            input_file=job_data["input_file"],
+            expected_output_file=job_data["expected_output_file"],
+            description=request.description,
+            client_id=job_data["client_id"],
+            mode=OperationMode.TRAINING,
+            message="Training job created successfully. Processing will begin shortly.",
+        )
+    except Exception as e:
+        logger.error(f"Failed to start training job: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start training job: {str(e)}",
+        )
 
 
 @router.post(
@@ -138,7 +191,7 @@ async def start_conversion_job(request: ConversionJobRequest) -> ConversionJobRe
                 )
 
     # Create new job
-    job_id = uuid.uuid4()
+    job_id = str(uuid.uuid4())
 
     # Create job in job manager
     job_data = await job_manager.create_job(
@@ -179,7 +232,7 @@ async def start_conversion_job(request: ConversionJobRequest) -> ConversionJobRe
         input_file=request.input_filename,
         expected_output_file=request.expected_output_filename,
         description=request.job_description,
-        client_id=UUID(job_data["client_id"]),
+        client_id=job_data["client_id"],
         mode=request.mode,
         message=f"{request.mode.value.title()} job created successfully. Processing will begin shortly.",
     )
@@ -199,12 +252,12 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job not found: {job_id}")
 
     return JobStatusResponse(
-        job_id=uuid.UUID(job_id),
+        job_id=job_id,
         status=job_data["status"],
         input_file=job_data["input_file"],
         expected_output_file=job_data.get("expected_output_file"),
         description=job_data.get("description"),
-        client_id=UUID(job_data["client_id"]),
+        client_id=job_data["client_id"],
         mode=OperationMode(job_data["mode"]),
         created_at=job_data["created_at"],
         updated_at=job_data.get("updated_at", job_data["created_at"]),
@@ -234,7 +287,7 @@ async def get_job_result(job_id: str) -> ConversionResult:
         )
 
     return ConversionResult(
-        job_id=uuid.UUID(job_id),
+        job_id=job_id,
         status=job_data["status"],
         success=job_data["status"] == JobStatus.COMPLETED,
         generated_script=job_data.get("generated_script"),
@@ -261,12 +314,12 @@ async def list_jobs() -> List[JobStatusResponse]:
     for job_id, job_data in all_jobs.items():
         jobs.append(
             JobStatusResponse(
-                job_id=uuid.UUID(job_id),
+                job_id=job_id,
                 status=job_data["status"],
                 input_file=job_data["input_file"],
                 expected_output_file=job_data.get("expected_output_file"),
                 description=job_data.get("description"),
-                client_id=UUID(job_data["client_id"]),
+                client_id=job_data["client_id"],
                 mode=OperationMode(job_data["mode"]),
                 created_at=job_data["created_at"],
                 updated_at=job_data.get("updated_at", job_data["created_at"]),
@@ -330,7 +383,7 @@ async def start_inference_job(request: InferenceJobRequest) -> ConversionJobResp
         )
 
     # Create new inference job
-    job_id = uuid.uuid4()
+    job_id = str(uuid.uuid4())
 
     job_data = await job_manager.create_job(
         job_id=job_id,
@@ -382,7 +435,7 @@ async def list_users() -> ListUsersResponse:
     summary="List user scripts",
     description="Get all scripts for a specific user, sorted by creation time",
 )
-async def list_user_scripts(client_id: UUID) -> ListUserScriptsResponse:
+async def list_user_scripts(client_id: str) -> ListUserScriptsResponse:
     """List all scripts for a specific user."""
 
     from datetime import datetime, timezone
@@ -430,7 +483,7 @@ async def get_inference_result(job_id: str) -> ConversionResult:
     inference_output = await job_manager.get_inference_output(job_id)
 
     return ConversionResult(
-        job_id=uuid.UUID(job_id),
+        job_id=job_id,
         status=job_data["status"],
         success=job_data["status"] == JobStatus.COMPLETED,
         generated_script=job_data.get("generated_script"),

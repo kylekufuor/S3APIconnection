@@ -5,11 +5,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
-from uuid import UUID
+from uuid import uuid4
 
 from loguru import logger
 
-from models.schemas import JobStatus, OperationMode
+from models.schemas import JobStatus, OperationMode, TrainingJobRequest, JobMetadata
+from utils.file_handlers import create_s3_folders, upload_to_s3, save_job_metadata_to_s3
 
 
 class JobManager:
@@ -66,32 +67,30 @@ class JobManager:
 
     async def create_job(
         self,
-        job_id: UUID,
+        job_id: str,
         input_file: str,
         expected_output_file: Optional[str] = None,
         description: Optional[str] = None,
         general_instructions: Optional[str] = None,
         column_instructions: Optional[Dict[str, str]] = None,
-        client_id: Optional[UUID] = None,
+        client_id: Optional[str] = None,
         mode: OperationMode = OperationMode.TRAINING,
     ) -> Dict[str, Any]:
         """Create a new conversion job."""
         async with self._lock:
             # Generate client_id if not provided
             if client_id is None:
-                from uuid import uuid4
-
-                client_id = uuid4()
+                client_id = str(uuid4())
 
             job_data: Dict[str, Any] = {
-                "job_id": str(job_id),
+                "job_id": job_id,
                 "status": JobStatus.PENDING,
                 "input_file": input_file,
                 "expected_output_file": expected_output_file,
                 "description": description,
                 "general_instructions": general_instructions,
                 "column_instructions": column_instructions,
-                "client_id": str(client_id),
+                "client_id": client_id,
                 "mode": mode.value,
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
@@ -104,9 +103,67 @@ class JobManager:
                 "agent_results": [],
             }
 
-            self._jobs[str(job_id)] = job_data
+            self._jobs[job_id] = job_data
             self._save_jobs()  # Save to persistent storage
             logger.info(f"Created {mode.value} job: {job_id} for client: {client_id}")
+            return job_data
+
+    async def create_training_job(
+        self,
+        request: TrainingJobRequest,
+    ) -> Dict[str, Any]:
+        """Create a new training job."""
+        async with self._lock:
+            job_id = str(uuid4())
+            user_id = request.user_id
+
+            # 1. Create S3 folder structure
+            create_s3_folders(user_id, job_id)
+
+            # 2. Create and save job metadata
+            metadata = JobMetadata(
+                user_id=user_id,
+                user_name=request.owner,
+                job_id=job_id,
+                job_title=request.job_title,
+                job_description=request.description,
+                created_at=datetime.now(timezone.utc),
+                job_status=JobStatus.PENDING,
+            )
+            await save_job_metadata_to_s3(metadata, user_id, job_id)
+
+            # 3. Upload files to S3
+            input_file_path = f"{user_id}/{job_id}/input/input.csv"
+            await upload_to_s3(request.input_file, input_file_path)
+
+            expected_output_file_path = f"{user_id}/{job_id}/input/expected_output.csv"
+            await upload_to_s3(request.expected_output_file, expected_output_file_path)
+
+            # 4. Create job in JobManager
+            job_data: Dict[str, Any] = {
+                "job_id": job_id,
+                "status": JobStatus.PENDING,
+                "input_file": input_file_path,
+                "expected_output_file": expected_output_file_path,
+                "description": request.description,
+                "general_instructions": request.general_instructions,
+                "column_instructions": request.column_instructions,
+                "client_id": user_id,
+                "mode": OperationMode.TRAINING.value,
+                "created_at": metadata.created_at,
+                "updated_at": metadata.created_at,
+                "current_step": "Job created",
+                "progress_details": {},
+                "error_message": None,
+                "generated_script": None,
+                "generated_script_path": None,
+                "test_results": None,
+                "agent_results": [],
+            }
+
+            self._jobs[job_id] = job_data
+            self._save_jobs()  # Save to persistent storage
+            logger.info(f"Created training job: {job_id} for user: {user_id}")
             return job_data
 
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -278,7 +335,7 @@ class JobManager:
 
             return len(jobs_to_delete)
 
-    async def get_jobs_by_client(self, client_id: UUID) -> Dict[str, Any]:
+    async def get_jobs_by_client(self, client_id: str) -> Dict[str, Any]:
         """Get all jobs for a specific client."""
         async with self._lock:
             client_jobs = {}
@@ -291,7 +348,7 @@ class JobManager:
             logger.info(f"Found {len(client_jobs)} jobs for client {client_id}")
             return client_jobs
 
-    async def get_latest_successful_job_for_client(self, client_id: UUID) -> Optional[Dict[str, Any]]:
+    async def get_latest_successful_job_for_client(self, client_id: str) -> Optional[Dict[str, Any]]:
         """Get the latest successful training job for a client."""
         client_jobs = await self.get_jobs_by_client(client_id)
 

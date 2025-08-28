@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,7 +53,7 @@ class ConversionJobRequest(BaseModel):
     column_instructions: Optional[Dict[str, str]] = Field(
         default=None, description="Column-specific transformation instructions"
     )
-    client_id: Optional[UUID] = Field(default=None, description="Optional client ID for user-specific training")
+    client_id: Optional[str] = Field(default=None, description="Optional client ID for user-specific training")
     mode: OperationMode = Field(default=OperationMode.TRAINING, description="Operation mode: training or inference")
     # New fields for direct file path support
     use_full_paths: Optional[bool] = Field(
@@ -71,19 +71,19 @@ class InferenceJobRequest(BaseModel):
     """Request model for starting an inference job."""
 
     input_filename: str
-    client_id: UUID = Field(description="Required client ID to identify the user's trained model")
+    client_id: str = Field(description="Required client ID to identify the user's trained model")
     job_description: Optional[str] = Field(default=None, description="Optional description of the inference task")
 
 
 class ConversionJobResponse(BaseModelWithConfig):
     """Response model for conversion job creation."""
 
-    job_id: UUID = Field(default_factory=uuid4)
+    job_id: str = Field(default_factory=lambda: str(uuid4()))
     status: JobStatus = JobStatus.PENDING
     input_file: str
     expected_output_file: Optional[str] = None  # Not required for inference mode
     description: Optional[str] = None
-    client_id: UUID
+    client_id: str
     mode: OperationMode
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     message: str
@@ -92,12 +92,12 @@ class ConversionJobResponse(BaseModelWithConfig):
 class JobStatusResponse(BaseModelWithConfig):
     """Response model for job status queries."""
 
-    job_id: UUID
+    job_id: str
     status: JobStatus
     input_file: str
     expected_output_file: Optional[str] = None  # Not required for inference mode
     description: Optional[str] = None
-    client_id: UUID
+    client_id: str
     mode: OperationMode
     created_at: datetime
     updated_at: datetime
@@ -119,7 +119,7 @@ class AgentExecutionResult(BaseModel):
 class ConversionResult(BaseModelWithConfig):
     """Final result of the CSV conversion process."""
 
-    job_id: UUID
+    job_id: str
     status: JobStatus
     success: bool
     generated_script: Optional[str] = None
@@ -135,23 +135,23 @@ class UserScriptInfo(BaseModelWithConfig):
     """Information about a user's generated script."""
 
     script_name: str
-    client_id: UUID
+    client_id: str
     created_at: datetime
     file_path: str
-    job_id: Optional[UUID] = None
+    job_id: Optional[str] = None
 
 
 class ListUsersResponse(BaseModelWithConfig):
     """Response model for listing users."""
 
-    users: List[UUID]
+    users: List[str]
     total_count: int
 
 
 class ListUserScriptsResponse(BaseModelWithConfig):
     """Response model for listing user scripts."""
 
-    client_id: UUID
+    client_id: str
     scripts: List[UserScriptInfo]
     latest_script: Optional[UserScriptInfo] = None
 
@@ -162,3 +162,30 @@ class ErrorResponse(BaseModelWithConfig):
     error: str
     detail: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TrainingJobRequest(BaseModel):
+    """Request model for starting a training job."""
+
+    user_id: str
+    input_file: str
+    expected_output_file: str
+    job_title: str
+    description: Optional[str] = None
+    owner: str
+    general_instructions: Optional[str] = None
+    column_instructions: Optional[Dict[str, str]] = None
+
+
+class JobMetadata(BaseModelWithConfig):
+    """Metadata for a training job to be saved in S3."""
+
+    user_id: str
+    user_name: str
+    job_id: str
+    job_title: str
+    job_description: Optional[str] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    job_status: JobStatus
+    script_path: Optional[str] = None
