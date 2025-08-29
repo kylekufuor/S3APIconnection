@@ -513,36 +513,16 @@ class CSVConversionWorkflow:
             local_script_path = Path(input_file_path).parent / "generatedScript.py"
             # Save generated script to job and user-specific directory
             if result["success"] and result.get("script_content"):
-                # Get job data to extract client_id
-
                 with open(local_script_path, "w", encoding="utf-8") as f:
                     f.write(result["script_content"])
-                job_data = await self.job_manager.get_job(job_id)
-                if job_data and job_data.get("client_id"):
-                    from utils.file_handlers import save_user_script
 
-                    client_id = job_data["client_id"]
-                    s3_script_path = await save_user_script(result["script_content"], client_id, job_id)
-
-                    # Save to job manager with script path
-                    await self.job_manager.set_generated_script(
-                        job_id,
-                        result["script_content"],
-                        str(local_script_path),
-                    )
-                    result["generated_script_path"] = str(local_script_path)
-                else:
-                    # Fallback to original method if no client_id
-                    from uuid import uuid4
-
-                    temp_client_id = str(uuid4())
-                    s3_script_path = await save_user_script(result["script_content"], temp_client_id, job_id)
-                    await self.job_manager.set_generated_script(
-                        job_id,
-                        result["script_content"],
-                        str(local_script_path),
-                    )
-                    result["generated_script_path"] = str(local_script_path)
+                # Save to job manager with script path
+                await self.job_manager.set_generated_script(
+                    job_id,
+                    result["script_content"],
+                    str(local_script_path),
+                )
+                result["generated_script_path"] = str(local_script_path)
 
             # Add agent result to job
             await self.job_manager.add_agent_result(
@@ -760,16 +740,32 @@ class CSVConversionWorkflow:
         self, job_id: str, planner_result: Dict[str, Any], coder_result: Dict[str, Any], tester_result: Dict[str, Any]
     ) -> None:
         """Handle successful job completion."""
+        s3_script_path = None
+        if coder_result.get("success") and coder_result.get("script_content"):
+            job_data = await self.job_manager.get_job(job_id)
+            if job_data and job_data.get("client_id"):
+                from utils.file_handlers import save_generated_script_to_s3
+
+                s3_script_path = await save_generated_script_to_s3(
+                    coder_result["script_content"],
+                    job_data["client_id"],
+                    job_id,
+                )
+
+        progress_details = {
+            "phase": "completed",
+            "step": 3,
+            "total_steps": 3,
+            "summary": "All phases completed successfully",
+        }
+        if s3_script_path:
+            progress_details["script_path"] = s3_script_path
+
         await self.job_manager.update_job_status(
             job_id,
             JobStatus.COMPLETED,
             current_step="Completed",
-            progress_details={
-                "phase": "completed",
-                "step": 3,
-                "total_steps": 3,
-                "summary": "All phases completed successfully",
-            },
+            progress_details=progress_details,
         )
 
         self.logger.info(f"Job {job_id} completed successfully")

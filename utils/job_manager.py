@@ -10,8 +10,8 @@ from uuid import uuid4
 from loguru import logger
 
 from core.config import settings
-from models.schemas import JobStatus, OperationMode, TrainingJobRequest, JobMetadata
-from utils.file_handlers import create_s3_folders, upload_to_s3, save_job_metadata_to_s3
+from models.schemas import JobMetadata, JobStatus, OperationMode, TrainingJobRequest
+from utils.file_handlers import create_s3_folders, save_job_metadata_to_s3, update_job_metadata_to_s3, upload_to_s3
 
 
 class JobManager:
@@ -203,6 +203,9 @@ class JobManager:
 
             if status in [JobStatus.COMPLETED, JobStatus.FAILED]:
                 job["completed_at"] = datetime.now(timezone.utc)
+
+                # Update S3 metadata
+                await update_job_metadata_to_s3(job, job_id, status, progress_details)
 
             self._save_jobs()  # Save to persistent storage
             logger.info(f"Updated job {job_id} status to {status}")

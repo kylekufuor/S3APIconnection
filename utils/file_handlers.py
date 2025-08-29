@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 from loguru import logger
 
 from core.config import settings
-from models.schemas import JobMetadata
+from models.schemas import JobMetadata, JobStatus
 
 
 async def validate_csv_file(file_path: Path) -> Tuple[bool, Optional[str]]:
@@ -362,9 +362,9 @@ def ensure_user_directory(client_id: str) -> Path:
     return user_dir
 
 
-async def save_user_script(script_content: str, client_id: str, job_id: str) -> str:
+async def save_generated_script_to_s3(script_content: str, client_id: str, job_id: str) -> str:
     """
-    Save a generated Python script to S3 and update the job metadata.
+    Save a generated Python script to S3.
 
     Args:
         script_content: The Python script content
@@ -384,16 +384,6 @@ async def save_user_script(script_content: str, client_id: str, job_id: str) -> 
     try:
         s3_client.put_object(Bucket=bucket_name, Key=script_key, Body=script_content.encode("utf-8"))
         logger.info(f"Saved user script to S3: {script_path}")
-
-        # Update job metadata with script path
-        job_metadata_path = f"{user_id}/{job_id}/job_metadata.json"
-        response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
-        metadata_content = response["Body"].read().decode("utf-8")
-        metadata = JobMetadata.model_validate_json(metadata_content)
-
-        metadata.script_path = script_path
-        await save_job_metadata_to_s3(metadata, user_id, job_id)
-
         return script_path
 
     except ClientError as e:
@@ -671,6 +661,37 @@ async def save_job_metadata_to_s3(metadata: JobMetadata, user_id: str, job_id: s
     except ClientError as e:
         logger.error(f"Error saving job metadata to S3: {e}")
         raise
+
+
+async def update_job_metadata_to_s3(
+    job: Dict[str, Any],
+    job_id: str,
+    status: JobStatus,
+    progress_details: Dict[str, Any],
+):
+    """Update job metadata to S3."""
+    try:
+        client_id = job.get("client_id")
+        if client_id:
+            s3_client = get_s3_client()
+            bucket_name = settings.aws_bucket_name
+            job_metadata_path = f"{client_id}/{job_id}/job_metadata.json"
+
+            response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
+            metadata_content = response["Body"].read().decode("utf-8")
+            metadata = JobMetadata.model_validate_json(metadata_content)
+
+            metadata.job_status = status
+            metadata.finished_at = job["completed_at"]
+
+            if progress_details and "script_path" in progress_details:
+                metadata.script_path = progress_details["script_path"]
+
+            await save_job_metadata_to_s3(metadata, client_id, job_id)
+    except ClientError as e:
+        logger.error(f"Failed to update S3 metadata for job {job_id}: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while updating S3 metadata for job {job_id}: {e}")
 
 
 def download_from_s3(s3_path: str, local_path: Path):
