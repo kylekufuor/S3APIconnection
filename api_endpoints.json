@@ -153,6 +153,97 @@
                 }
             }
         },
+        "/api/v1/delete/job/{user_id}/{job_id}": {
+            "delete": {
+                "tags": [
+                    "CSV Converter"
+                ],
+                "summary": "Delete a specific job folder",
+                "description": "Deletes a specific job folder and all its contents from the S3 bucket.",
+                "operationId": "delete_job_folder_api_v1_delete_job__user_id___job_id__delete",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "User Id"
+                        }
+                    },
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/delete/user/{user_id}": {
+            "delete": {
+                "tags": [
+                    "CSV Converter"
+                ],
+                "summary": "Delete a user's entire folder",
+                "description": "Deletes a user's entire folder and all its contents from the S3 bucket.",
+                "operationId": "delete_user_folder_api_v1_delete_user__user_id__delete",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "User Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/": {
             "get": {
                 "tags": [
