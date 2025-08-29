@@ -17,6 +17,7 @@ from models.schemas import (
     ConversionResult,
     FileUploadResponse,
     InferenceJobRequest,
+    InferenceRequest,
     JobStatus,
     JobStatusResponse,
     ListUserScriptsResponse,
@@ -411,6 +412,58 @@ async def start_inference_job(request: InferenceJobRequest) -> ConversionJobResp
         mode=OperationMode.INFERENCE,
         message="Inference job created successfully. Processing will begin shortly.",
     )
+
+
+@router.post(
+    "/inference/run",
+    response_model=ConversionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Run Inference Job",
+    description="Runs an inference job using a specified trained model and input file.",
+)
+async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
+    """
+    Starts a new inference job:
+    1. Creates a new job with a unique ID for tracking.
+    2. Kicks off the background processing workflow for inference.
+    3. Returns the job information.
+    """
+    try:
+        # Create a new job for this inference task
+        inference_job_id = str(uuid.uuid4())
+
+        job_data = await job_manager.create_job(
+            job_id=inference_job_id,
+            input_file=request.input_file,
+            client_id=request.user_id,
+            mode=OperationMode.INFERENCE,
+            description=f"Inference for job {request.job_id}",
+        )
+
+        # Start the inference workflow in the background
+        asyncio.create_task(
+            csv_conversion_workflow.run_inference_job(
+                inference_job_id=inference_job_id,
+                user_id=request.user_id,
+                training_job_id=request.job_id,
+                input_file=request.input_file,
+            )
+        )
+
+        return ConversionJobResponse(
+            job_id=inference_job_id,
+            status=JobStatus.PENDING,
+            input_file=request.input_file,
+            client_id=request.user_id,
+            mode=OperationMode.INFERENCE,
+            message="Inference job created successfully. Processing will begin shortly.",
+        )
+    except Exception as e:
+        logger.error(f"Failed to start inference job: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start inference job: {str(e)}",
+        )
 
 
 @router.get(

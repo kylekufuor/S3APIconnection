@@ -177,6 +177,14 @@ class TrainingJobRequest(BaseModel):
     column_instructions: Optional[Dict[str, str]] = None
 
 
+class InferenceRequest(BaseModel):
+    """Request model for starting an inference job."""
+
+    user_id: str = Field(description="Client ID to identify the user's trained model")
+    job_id: str = Field(description="Job ID of the trained model to use for inference")
+    input_file: str = Field(description="S3 URI, URL or Base64 file content encoded")
+
+
 class JobMetadata(BaseModelWithConfig):
     """Metadata for a training job to be saved in S3."""
 

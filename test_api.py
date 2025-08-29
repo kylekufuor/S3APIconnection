@@ -1,6 +1,7 @@
-import requests
 import base64
 import json
+
+import requests
 
 # --- Configuration ---
 BASE_URL = "http://localhost:8000/api/v1"
@@ -71,5 +72,57 @@ def test_training_endpoint():
     print("\n--- Test Finished ---")
 
 
+def test_inference_endpoint():
+    """Tests the /api/v1/inference/run endpoint."""
+    print("--- Starting API Test for /api/v1/inference/run ---")
+
+    # --- Prepare Payload ---
+    # This job_id should be from a completed training job
+    training_job_id = "6d83b9a5-3911-409c-a904-80c0a81ac346"
+    # input_file_s3_uri = "s3://madular-data-files/Test 2 - Raw.csv"
+    # create base64 encoded file
+    input_file = None
+    with open(
+        "/home/work/freelancer/ai_csv_to_csv_converter_DocXPress/ai_csv_to_csv_converter_DocXPress_streamlit_POC/.cursor/rules/test_csvs/test_Test 2 - Raw.csv",
+        "rb",
+    ) as f:
+        content = f.read()
+        input_file = base64.b64encode(content).decode("utf-8")
+
+    payload = {
+        "user_id": "test_user_123",
+        "job_id": training_job_id,
+        "input_file": input_file,
+    }
+
+    # --- Send Request ---
+    try:
+        print(f"Sending POST request to {BASE_URL}/inference/run")
+        response = requests.post(f"{BASE_URL}/inference/run", json=payload, timeout=30)
+
+        # --- Print Response ---
+        print(f"\nResponse Status Code: {response.status_code}")
+
+        if response.status_code == 202:
+            print("\nSuccessfully started inference job!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError starting inference job.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+    print("\n--- Test Finished ---")
+
+
 if __name__ == "__main__":
-    test_training_endpoint()
+    # test_training_endpoint()
+
+    test_inference_endpoint()

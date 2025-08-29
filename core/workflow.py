@@ -1,5 +1,6 @@
 """Main workflow orchestration for CSV conversion using CrewAI agents."""
 
+from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -796,6 +797,135 @@ class CSVConversionWorkflow:
         )
 
         self.logger.info(f"Inference job {job_id} completed successfully")
+
+    async def run_inference_job(
+        self, inference_job_id: str, user_id: str, training_job_id: str, input_file: str
+    ) -> None:
+        """
+        Run an inference job using a trained model.
+
+        Args:
+            inference_job_id: The ID of the inference job.
+            user_id: The ID of the user.
+            training_job_id: The ID of the training job to use for the model.
+            input_file: The input file for inference (S3 URI, URL, or Base64).
+        """
+        self.logger.info(
+            f"Starting inference job {inference_job_id} for user {user_id} using training job {training_job_id}"
+        )
+        await self.job_manager.update_job_status(
+            inference_job_id, JobStatus.PLANNING, current_step="Preparing for inference"
+        )
+
+        temp_dir = None
+        try:
+            # 1. Get the script path from S3
+            from utils.file_handlers import get_s3_client
+            from botocore.exceptions import ClientError
+
+            s3_client = get_s3_client()
+            bucket_name = settings.aws_bucket_name
+            script_key = f"{user_id}/{training_job_id}/script/generatedScript_{training_job_id}.py"
+
+            try:
+                s3_client.head_object(Bucket=bucket_name, Key=script_key)
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "404":
+                    error_msg = f"Generated script not found for training job {training_job_id}"
+                    self.logger.error(error_msg)
+                    await self._handle_job_failure(inference_job_id, "Script not found", error_msg)
+                    return
+                else:
+                    raise
+
+            # 2. Download input file to a temporary location
+            temp_dir = tempfile.TemporaryDirectory()
+            temp_dir_path = Path(temp_dir.name)
+            local_input_path = temp_dir_path / "input.csv"
+
+            await self._download_input_file(input_file, local_input_path)
+
+            # 3. Download the script to a temporary location
+            local_script_path = temp_dir_path / "generated_script.py"
+            s3_client.download_file(bucket_name, script_key, str(local_script_path))
+
+            # 4. Execute the script
+            await self.job_manager.update_job_status(
+                inference_job_id, JobStatus.CODING, current_step="Executing script"
+            )
+
+            output_file_name = f"{int(datetime.now(timezone.utc).timestamp())}.csv"
+            local_output_path = temp_dir_path / output_file_name
+
+            import subprocess
+            from utils.file_handlers import safe_file_path
+
+            cmd = [
+                "uv",
+                "run",
+                safe_file_path(local_script_path),
+                safe_file_path(local_input_path),
+                "--save-csv",
+                safe_file_path(local_output_path),
+            ]
+
+            self.logger.info(f"Executing command: {' '.join(cmd)}")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+                cwd=local_script_path.parent,
+            )
+
+            if result.returncode != 0:
+                error_msg = f"Script execution failed: {result.stderr}"
+                self.logger.error(error_msg)
+                await self._handle_job_failure(inference_job_id, "Script execution failed", error_msg)
+                return
+
+            # 5. Upload the output file to S3
+            output_key = f"{user_id}/{training_job_id}/output/{output_file_name}"
+            s3_client.upload_file(str(local_output_path), bucket_name, output_key)
+            output_s3_path = f"s3://{bucket_name}/{output_key}"
+
+            # 6. Update job status to completed
+            await self.job_manager.update_job_status(
+                inference_job_id,
+                JobStatus.COMPLETED,
+                current_step="Completed",
+                progress_details={"output_path": output_s3_path},
+            )
+            self.logger.info(f"Inference job {inference_job_id} completed successfully. Output at {output_s3_path}")
+
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during inference: {e}"
+            self.logger.error(error_msg)
+            await self._handle_job_failure(inference_job_id, "Inference failed", error_msg)
+        finally:
+            if temp_dir:
+                temp_dir.cleanup()
+
+    async def _download_input_file(self, input_file: str, local_path: Path) -> None:
+        """Download the input file from URL, S3, or Base64."""
+        if input_file.startswith("s3://"):
+            from utils.file_handlers import download_from_s3
+
+            download_from_s3(input_file, local_path)
+        elif input_file.startswith("http"):
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(input_file)
+                response.raise_for_status()
+                with open(local_path, "wb") as f:
+                    f.write(response.content)
+        else:  # assume base64
+            import base64
+
+            with open(local_path, "wb") as f:
+                f.write(base64.b64decode(input_file))
 
     def _is_value_mapping_issue(self, tester_result: Dict[str, Any]) -> bool:
         """Check if the test failure is due to value mapping issues."""
