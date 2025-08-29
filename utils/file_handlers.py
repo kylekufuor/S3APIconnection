@@ -630,15 +630,9 @@ async def upload_to_s3(source: str, s3_path: str):
                 response = await client.get(source)
                 response.raise_for_status()
                 s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=response.content)
-        elif ";base64," in source:
-            # Handle base64 string
-            header, encoded = source.split(",", 1)
-            data = base64.b64decode(encoded)
-            s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=data)
         else:
-            # Handle local file path
-            with open(source, "rb") as f:
-                s3_client.upload_fileobj(f, bucket_name, s3_path)
+            data = base64.b64decode(source)
+            s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=data)
 
         logger.info(f"Uploaded file to S3: {s3_path}")
 
