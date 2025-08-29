@@ -754,3 +754,74 @@ async def get_user_jobs_from_s3(user_id: str) -> List[Dict[str, Any]]:
         raise
 
     return jobs
+
+
+async def delete_s3_job_folder(user_id: str, job_id: str) -> None:
+    """
+    Deletes a specific job folder and all its contents from the S3 bucket.
+
+    Args:
+        user_id: The ID of the user.
+        job_id: The ID of the job to delete.
+    """
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    prefix = f"{user_id}/{job_id}/"
+
+    try:
+        objects_to_delete = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+
+        for page in pages:
+            if "Contents" in page:
+                for obj in page["Contents"]:
+                    objects_to_delete.append({"Key": obj["Key"]})
+
+        if objects_to_delete:
+            s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
+            logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for job {job_id} of user {user_id}")
+        else:
+            logger.info(f"No objects found to delete for job {job_id} of user {user_id}")
+
+    except ClientError as e:
+        logger.error(f"Error deleting job folder {job_id} for user {user_id} from S3: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during S3 job folder deletion: {e}")
+        raise
+
+
+async def delete_s3_user_folder(user_id: str) -> None:
+    """
+    Deletes a whole user folder and all its contents from the S3 bucket.
+
+    Args:
+        user_id: The ID of the user whose folder is to be deleted.
+    """
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    prefix = f"{user_id}/"
+
+    try:
+        objects_to_delete = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+
+        for page in pages:
+            if "Contents" in page:
+                for obj in page["Contents"]:
+                    objects_to_delete.append({"Key": obj["Key"]})
+
+        if objects_to_delete:
+            s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
+            logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for user {user_id}")
+        else:
+            logger.info(f"No objects found to delete for user {user_id}")
+
+    except ClientError as e:
+        logger.error(f"Error deleting user folder {user_id} from S3: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during S3 user folder deletion: {e}")
+        raise

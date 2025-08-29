@@ -151,9 +151,37 @@ def test_list_user_jobs_endpoint():
         print(f"\nAn error occurred while sending the request: {e}")
 
 
+def test_delete_user_endpoint():
+    """Tests the /delete/user/{user_id} endpoint."""
+    print("--- Starting API Test for /api/v1/delete/user/{user_id} ---")
+    user_id = "test_user_123"
+    job_id = "6d83b9a5-3911-409c-a904-80c0a81ac346"
+    # --- Send Request ---
+    try:
+        print(f"Sending DELETE request to {BASE_URL}/delete/user/{user_id}")
+        response = requests.delete(f"{BASE_URL}/delete/user/{user_id}", headers=HEADERS, timeout=30)
+        print(f"\nResponse Status Code: {response.status_code}")
+        if response.status_code == 204:
+            print("\nSuccessfully deleted job folder!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError deleting job folder.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+
 if __name__ == "__main__":
     # test_training_endpoint()
 
     # test_inference_endpoint()
 
-    test_list_user_jobs_endpoint()
+    # test_list_user_jobs_endpoint()
+
+    test_delete_user_endpoint()

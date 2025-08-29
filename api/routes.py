@@ -146,3 +146,48 @@ async def list_user_jobs(client_id: str) -> List[Dict[str, Any]]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list jobs for user {client_id}: {str(e)}",
         )
+
+
+@router.delete(
+    "/delete/job/{user_id}/{job_id}",
+    summary="Delete a specific job folder",
+    description="Deletes a specific job folder and all its contents from the S3 bucket.",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_job_folder(user_id: str, job_id: str):
+    """
+    Deletes a specific job folder from S3.
+    """
+    try:
+        from utils.file_handlers import delete_s3_job_folder
+        await delete_s3_job_folder(user_id, job_id)
+        return {"message": f"Job {job_id} for user {user_id} deleted successfully."}
+    except Exception as e:
+        logger.error(f"Failed to delete job {job_id} for user {user_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete job folder: {str(e)}",
+        )
+
+
+@router.delete(
+    "/delete/user/{user_id}",
+    summary="Delete a user's entire folder",
+    description="Deletes a user's entire folder and all its contents from the S3 bucket.",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_user_folder(user_id: str):
+    """
+    Deletes a user's entire folder from S3.
+    """
+    try:
+        from utils.file_handlers import delete_s3_user_folder
+        await delete_s3_user_folder(user_id)
+        return {"message": f"User folder {user_id} deleted successfully."}
+    except Exception as e:
+        logger.error(f"Failed to delete user folder {user_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete user folder: {str(e)}",
+        )
+
