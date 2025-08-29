@@ -2,12 +2,10 @@
 
 import asyncio
 import base64
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
-import aiofiles  # type: ignore
 import boto3
 import pandas as pd  # type: ignore
 from botocore.exceptions import ClientError
@@ -380,17 +378,18 @@ async def save_user_script(script_content: str, client_id: str, job_id: str) -> 
     bucket_name = settings.aws_bucket_name
     user_id = str(client_id)
     script_name = f"generatedScript_{job_id}.py"
-    script_path = f"{user_id}/{job_id}/script/{script_name}"
+    script_key = f"{user_id}/{job_id}/script/{script_name}"
+    script_path = f"s3://{bucket_name}/{script_key}"
 
     try:
-        s3_client.put_object(Bucket=bucket_name, Key=script_path, Body=script_content.encode("utf-8"))
+        s3_client.put_object(Bucket=bucket_name, Key=script_key, Body=script_content.encode("utf-8"))
         logger.info(f"Saved user script to S3: {script_path}")
 
         # Update job metadata with script path
         job_metadata_path = f"{user_id}/{job_id}/job_metadata.json"
         response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
         metadata_content = response["Body"].read().decode("utf-8")
-        metadata = JobMetadata.parse_raw(metadata_content)
+        metadata = JobMetadata.model_validate_json(metadata_content)
 
         metadata.script_path = script_path
         await save_job_metadata_to_s3(metadata, user_id, job_id)
@@ -538,6 +537,7 @@ def list_all_users() -> List[str]:
 
     return sorted(users)
 
+
 def safe_file_path(file_path: Path) -> str:
     """
     Convert a file path to a string that's safe for subprocess calls.
@@ -549,6 +549,7 @@ def safe_file_path(file_path: Path) -> str:
         String representation safe for subprocess calls
     """
     return str(file_path.resolve())
+
 
 def validate_file_exists(file_path: Path, file_type: str = "file") -> tuple[bool, str]:
     """
@@ -574,6 +575,7 @@ def validate_file_exists(file_path: Path, file_type: str = "file") -> tuple[bool
     except (OSError, IOError):
         return False, f"{file_type.title()} file is not readable: {file_path}"
 
+
 def get_s3_client():
     """Get a boto3 S3 client."""
     return boto3.client(
@@ -581,6 +583,7 @@ def get_s3_client():
         aws_access_key_id=settings.aws_access_key_id,
         aws_secret_access_key=settings.aws_secret_access_key,
     )
+
 
 def s3_folder_exists(s3_client, bucket_name, folder_path):
     """Check if a folder exists in S3."""
@@ -590,6 +593,7 @@ def s3_folder_exists(s3_client, bucket_name, folder_path):
     except ClientError as e:
         logger.error(f"Error checking S3 folder: {e}")
         return False
+
 
 def create_s3_folders(user_id: str, job_id: str):
     """Create the folder structure in S3 for a job."""
@@ -618,7 +622,7 @@ async def upload_to_s3(source: str, s3_path: str):
     try:
         if source.startswith("s3://"):
             source_bucket, source_key = source.replace("s3://", "").split("/", 1)
-            
+
             if source_bucket == bucket_name and source_key == s3_path:
                 logger.info(f"Source and destination are the same, skipping copy: {source}")
                 return
@@ -668,13 +672,14 @@ async def save_job_metadata_to_s3(metadata: JobMetadata, user_id: str, job_id: s
         logger.error(f"Error saving job metadata to S3: {e}")
         raise
 
+
 def download_from_s3(s3_path: str, local_path: Path):
     """Download a file from S3 to a local path."""
     s3_client = get_s3_client()
     try:
         parsed_url = urlparse(s3_path)
         bucket_name = parsed_url.netloc
-        key = parsed_url.path.lstrip('/')
+        key = parsed_url.path.lstrip("/")
         s3_client.download_file(bucket_name, key, str(local_path))
         logger.info(f"Downloaded file from S3: {s3_path} to {local_path}")
     except ClientError as e:
