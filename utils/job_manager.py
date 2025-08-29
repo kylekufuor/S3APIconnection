@@ -201,7 +201,7 @@ class JobManager:
             if error_message is not None:
                 job["error_message"] = error_message
 
-            if status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+            if status in [JobStatus.COMPLETED, JobStatus.FAILED] and job["mode"] == OperationMode.TRAINING.value:
                 job["completed_at"] = datetime.now(timezone.utc)
 
                 # Update S3 metadata
