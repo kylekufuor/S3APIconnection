@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     aws_secret_access_key: Optional[str] = None
     aws_bucket_name: str = "madular-data-files"
 
+    # fastapi & webapp settings
+    fastapi_and_wep_app_secret_key: str = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

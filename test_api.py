@@ -3,8 +3,12 @@ import json
 
 import requests
 
+from core.config import settings
+
 # --- Configuration ---
 BASE_URL = "http://localhost:8000/api/v1"
+API_KEY = settings.fastapi_and_wep_app_secret_key
+HEADERS = {"X-API-KEY": API_KEY}
 
 # --- Sample Data ---
 
@@ -48,7 +52,7 @@ def test_training_endpoint():
     # --- Send Request ---
     try:
         print(f"Sending POST request to {BASE_URL}/train")
-        response = requests.post(f"{BASE_URL}/train", json=payload, timeout=30)
+        response = requests.post(f"{BASE_URL}/train", json=payload, headers=HEADERS, timeout=30)
 
         # --- Print Response ---
         print(f"\nResponse Status Code: {response.status_code}")
@@ -98,7 +102,7 @@ def test_inference_endpoint():
     # --- Send Request ---
     try:
         print(f"Sending POST request to {BASE_URL}/inference/run")
-        response = requests.post(f"{BASE_URL}/inference/run", json=payload, timeout=30)
+        response = requests.post(f"{BASE_URL}/inference/run", json=payload, headers=HEADERS, timeout=30)
 
         # --- Print Response ---
         print(f"\nResponse Status Code: {response.status_code}")

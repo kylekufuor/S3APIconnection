@@ -3,12 +3,13 @@
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.routes import router as api_router
+from api.security import get_api_key
 from core.config import settings
 from core.logging import setup_logging
 from models.schemas import ErrorResponse
@@ -70,7 +71,9 @@ def create_app() -> FastAPI:
     )
 
     # Include API routes
-    app.include_router(api_router, prefix="/api/v1", tags=["CSV Converter"])
+    app.include_router(
+        api_router, prefix="/api/v1", tags=["CSV Converter"], dependencies=[Depends(get_api_key)]
+    )
 
     # Global exception handler
     @app.exception_handler(HTTPException)
