@@ -126,7 +126,34 @@ def test_inference_endpoint():
     print("\n--- Test Finished ---")
 
 
+def test_list_user_jobs_endpoint():
+    """Tests the /api/v1/users/{client_id}/jobs endpoint."""
+    print("--- Starting API Test for /api/v1/users/{client_id}/jobs ---")
+    client_id = "test_user_123"
+    # --- Send Request ---
+    try:
+        print(f"Sending GET request to {BASE_URL}/users/{client_id}/jobs")
+        response = requests.get(f"{BASE_URL}/users/{client_id}/jobs", headers=HEADERS, timeout=30)
+        print(f"\nResponse Status Code: {response.status_code}")
+        if response.status_code == 200:
+            print("\nSuccessfully listed jobs for user!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError listing jobs for user.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+
 if __name__ == "__main__":
     # test_training_endpoint()
 
-    test_inference_endpoint()
+    # test_inference_endpoint()
+
+    test_list_user_jobs_endpoint()

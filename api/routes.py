@@ -3,30 +3,18 @@
 import asyncio
 import logging
 import uuid
-from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
-import aiofiles
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, HTTPException, status
 
-from core.config import settings
 from core.workflow import csv_conversion_workflow
 from models.schemas import (
-    ConversionJobRequest,
     ConversionJobResponse,
-    ConversionResult,
-    FileUploadResponse,
-    InferenceJobRequest,
     InferenceRequest,
     JobStatus,
-    JobStatusResponse,
-    ListUserScriptsResponse,
-    ListUsersResponse,
     OperationMode,
-    UserScriptInfo,
     TrainingJobRequest,
 )
-from utils.file_handlers import validate_csv_file
 from utils.job_manager import job_manager
 
 router = APIRouter()
@@ -86,131 +74,6 @@ async def start_training_job(request: TrainingJobRequest) -> ConversionJobRespon
         )
 
 
-
-
-
-
-
-
-@router.get(
-    "/jobs/{job_id}/status",
-    response_model=JobStatusResponse,
-    summary="Get job status",
-    description="Get the current status and progress of a conversion job",
-)
-async def get_job_status(job_id: str) -> JobStatusResponse:
-    """Get the status of a conversion job."""
-
-    job_data = await job_manager.get_job(job_id)
-    if not job_data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job not found: {job_id}")
-
-    return JobStatusResponse(
-        job_id=job_id,
-        status=job_data["status"],
-        input_file=job_data["input_file"],
-        expected_output_file=job_data.get("expected_output_file"),
-        description=job_data.get("description"),
-        client_id=job_data["client_id"],
-        mode=OperationMode(job_data["mode"]),
-        created_at=job_data["created_at"],
-        updated_at=job_data.get("updated_at", job_data["created_at"]),
-        current_step=job_data.get("current_step"),
-        progress_details=job_data.get("progress_details"),
-        error_message=job_data.get("error_message"),
-    )
-
-
-@router.get(
-    "/jobs/{job_id}/result",
-    response_model=ConversionResult,
-    summary="Get job result",
-    description="Get the final result of a completed conversion job",
-)
-async def get_job_result(job_id: str) -> ConversionResult:
-    """Get the result of a conversion job."""
-
-    job_data = await job_manager.get_job(job_id)
-    if not job_data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job not found: {job_id}")
-
-    if job_data["status"] not in [JobStatus.COMPLETED, JobStatus.FAILED]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Job is not completed. Current status: {job_data['status']}",
-        )
-
-    return ConversionResult(
-        job_id=job_id,
-        status=job_data["status"],
-        success=job_data["status"] == JobStatus.COMPLETED,
-        generated_script=job_data.get("generated_script"),
-        test_results=job_data.get("test_results"),
-        agent_results=job_data.get("agent_results", []),
-        created_at=job_data["created_at"],
-        completed_at=job_data.get("completed_at"),
-        error_message=job_data.get("error_message"),
-    )
-
-
-@router.get(
-    "/jobs",
-    response_model=List[JobStatusResponse],
-    summary="List all jobs",
-    description="Get a list of all conversion jobs",
-)
-async def list_jobs() -> List[JobStatusResponse]:
-    """Get a list of all conversion jobs."""
-
-    all_jobs = await job_manager.list_jobs()
-    jobs = []
-
-    for job_id, job_data in all_jobs.items():
-        jobs.append(
-            JobStatusResponse(
-                job_id=job_id,
-                status=job_data["status"],
-                input_file=job_data["input_file"],
-                expected_output_file=job_data.get("expected_output_file"),
-                description=job_data.get("description"),
-                client_id=job_data["client_id"],
-                mode=OperationMode(job_data["mode"]),
-                created_at=job_data["created_at"],
-                updated_at=job_data.get("updated_at", job_data["created_at"]),
-                current_step=job_data.get("current_step"),
-                progress_details=job_data.get("progress_details"),
-                error_message=job_data.get("error_message"),
-            )
-        )
-
-    return jobs
-
-
-@router.delete(
-    "/jobs/{job_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a job",
-    description="Delete a conversion job and its associated files",
-)
-async def delete_job(job_id: str) -> None:
-    """Delete a conversion job."""
-
-    job_exists = await job_manager.delete_job(job_id)
-    if not job_exists:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job not found: {job_id}")
-
-    # Clean up temporary files
-    from utils.file_handlers import cleanup_temp_files
-
-    cleanup_temp_files(job_id)
-
-
-# New endpoints for inference mode and user management
-
-
-
-
-
 @router.post(
     "/inference/run",
     response_model=ConversionJobResponse,
@@ -264,50 +127,22 @@ async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
 
 
 @router.get(
-    "/users",
-    response_model=ListUsersResponse,
-    summary="List all users",
-    description="Get a list of all users who have trained models",
+    "/users/{client_id}/jobs",
+    response_model=List[Dict[str, Any]],
+    summary="List all jobs for a user",
+    description="Get a list of all jobs for a specific user by reading metadata from S3.",
 )
-async def list_users() -> ListUsersResponse:
-    """List all users who have generated scripts."""
-
-    from utils.file_handlers import list_all_users
-
-    users = list_all_users()
-
-    return ListUsersResponse(users=users, total_count=len(users))
-
-
-@router.get(
-    "/users/{client_id}/scripts",
-    response_model=ListUserScriptsResponse,
-    summary="List user scripts",
-    description="Get all scripts for a specific user, sorted by creation time",
-)
-async def list_user_scripts(client_id: str) -> ListUserScriptsResponse:
-    """List all scripts for a specific user."""
-
-    from datetime import datetime, timezone
-
-    from utils.file_handlers import get_user_scripts
-
-    scripts_data = get_user_scripts(client_id)
-
-    # Convert to UserScriptInfo objects
-    scripts = []
-    for script_data in scripts_data:
-        script_info = UserScriptInfo(
-            script_name=script_data["script_name"],
-            client_id=client_id,
-            created_at=datetime.fromtimestamp(script_data["created_at"], tz=timezone.utc),
-            file_path=script_data["file_path"],
+async def list_user_jobs(client_id: str) -> List[Dict[str, Any]]:
+    """
+    List all jobs for a specific user.
+    """
+    try:
+        from utils.file_handlers import get_user_jobs_from_s3
+        jobs = await get_user_jobs_from_s3(client_id)
+        return jobs
+    except Exception as e:
+        logger.error(f"Failed to list jobs for user {client_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list jobs for user {client_id}: {str(e)}",
         )
-        scripts.append(script_info)
-
-    latest_script = scripts[0] if scripts else None
-
-    return ListUserScriptsResponse(client_id=client_id, scripts=scripts, latest_script=latest_script)
-
-
-

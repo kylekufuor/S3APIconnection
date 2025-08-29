@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
@@ -709,3 +710,47 @@ def download_from_s3(s3_path: str, local_path: Path):
     except Exception as e:
         logger.error(f"An unexpected error occurred during S3 download: {e}")
         raise
+
+
+async def get_user_jobs_from_s3(user_id: str) -> List[Dict[str, Any]]:
+    """
+    List all jobs for a user by reading metadata from S3.
+
+    Args:
+        user_id: The ID of the user.
+
+    Returns:
+        A list of job metadata dictionaries.
+    """
+    s3_client = get_s3_client()
+    bucket_name = settings.aws_bucket_name
+    prefix = f"{user_id}/"
+
+    jobs = []
+    try:
+        # List objects with the user's prefix
+        paginator = s3_client.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix, Delimiter="/")
+
+        for page in pages:
+            if "CommonPrefixes" not in page:
+                continue
+
+            for common_prefix in page.get("CommonPrefixes", []):
+                job_id = common_prefix.get("Prefix").split("/")[-2]
+                metadata_key = f"{user_id}/{job_id}/job_metadata.json"
+
+                try:
+                    metadata_obj = s3_client.get_object(Bucket=bucket_name, Key=metadata_key)
+                    metadata_content = metadata_obj["Body"].read().decode("utf-8")
+                    jobs.append(json.loads(metadata_content))
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "NoSuchKey":
+                        logger.warning(f"Metadata file not found for job {job_id} of user {user_id}")
+                    else:
+                        raise
+    except ClientError as e:
+        logger.error(f"Error listing jobs for user {user_id} from S3: {e}")
+        raise
+
+    return jobs
