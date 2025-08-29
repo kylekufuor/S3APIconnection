@@ -25,3 +25,5 @@ generated_scripts/
 # Streamlit
 .streamlit/secrets.toml
 uv.lock
+*.ipynb_checkpoints
+*.ipynb

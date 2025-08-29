@@ -23,6 +23,7 @@ Note: On Linux/macOS, environment variable names are case-sensitive. Use upperca
 
 """
 
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -43,8 +44,8 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # File Storage Settings
-    # upload_dir: Path = Path(__file__).parent.parent.parent / "uploads"
-    # temp_dir: Path = Path(__file__).parent.parent.parent / "temp"
+    upload_dir: Path = Path(__file__).parent.parent.parent / "uploads"
+    temp_dir: Path = Path(__file__).parent.parent.parent / "temp"
     max_file_size: int = 10 * 1024 * 1024  # 10MB
 
     # CrewAI Settings
@@ -69,9 +70,8 @@ class Settings(BaseSettings):
 
     def __post_init__(self) -> None:
         """Create necessary directories after initialization."""
-        # self.upload_dir.mkdir(exist_ok=True)
-        # self.temp_dir.mkdir(exist_ok=True)
-        pass
+        self.upload_dir.mkdir(exist_ok=True)
+        self.temp_dir.mkdir(exist_ok=True)
 
 
 # Global settings instance

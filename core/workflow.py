@@ -51,22 +51,26 @@ class CSVConversionWorkflow:
         temp_dir = None
 
         try:
-            if use_full_paths and input_file_path.startswith(f"s3://{settings.aws_bucket_name}"):
+            if use_full_paths and input_file_path.startswith("s3://"):
                 temp_dir = tempfile.TemporaryDirectory()
                 temp_dir_path = Path(temp_dir.name)
 
                 # Download input file
                 local_input_path = temp_dir_path / "input.csv"
-                s3_input_key = "/".join(input_file_path.split("/")[3:])
-                download_from_s3(s3_input_key, local_input_path)
-                input_file_path = str(local_input_path)
+                download_from_s3(input_file_path, local_input_path)
+                planner_input_file_path = str(local_input_path)
 
                 # Download expected output file
                 if expected_output_file_path:
                     local_expected_output_path = temp_dir_path / "expected_output.csv"
-                    s3_expected_output_key = "/".join(expected_output_file_path.split("/")[3:])
-                    download_from_s3(s3_expected_output_key, local_expected_output_path)
-                    expected_output_file_path = str(local_expected_output_path)
+                    download_from_s3(expected_output_file_path, local_expected_output_path)
+                    planner_expected_output_file_path = str(local_expected_output_path)
+                else:
+                    planner_expected_output_file_path = None
+
+            else:
+                planner_input_file_path = input_file_path
+                planner_expected_output_file_path = expected_output_file_path
 
             # Get job data to determine mode
             job_data = await self.job_manager.get_job(job_id_str)
@@ -113,14 +117,14 @@ class CSVConversionWorkflow:
                     # Step 1: Execute Planner Agent with feedback
                     planner_result = await self._execute_planner_phase(
                         job_id_str,
-                        input_file_path,
-                        expected_output_file_path,
+                        planner_input_file_path,
+                        planner_expected_output_file_path,
                         job_description,
                         general_instructions,
                         column_instructions,
                         previous_attempts,
                         agent_feedback,
-                        use_full_paths,
+                        True,  # Always use full paths for planner
                     )
 
                     if not planner_result["success"]:
@@ -167,12 +171,12 @@ class CSVConversionWorkflow:
                     coder_result = await self._execute_coder_phase(
                         job_id_str,
                         planner_result,
-                        input_file_path,
+                        planner_input_file_path,
                         job_description,
                         general_instructions,
                         column_instructions,
                         agent_feedback,
-                        use_full_paths,
+                        True,  # Always use full paths for coder
                     )
 
                     if not coder_result["success"]:
@@ -217,7 +221,7 @@ class CSVConversionWorkflow:
                     )
 
                     tester_result = await self._execute_tester_phase(
-                        job_id_str, coder_result, input_file_path, expected_output_file_path, use_full_paths
+                        job_id_str, coder_result, planner_input_file_path, planner_expected_output_file_path, True
                     )
 
                     # Determine if we need another improvement cycle
@@ -262,7 +266,9 @@ class CSVConversionWorkflow:
                                 if feedback_for_coder:
                                     agent_feedback["coder_feedback"] = feedback_for_coder
                                     agent_feedback["test_report"] = tester_result.get("test_report", "")
-                                    self.logger.info(f"Extracted feedback for next cycle: {len(feedback_for_coder)} items")
+                                    self.logger.info(
+                                        f"Extracted feedback for next cycle: {len(feedback_for_coder)} items"
+                                    )
                         else:
                             # Tester phase failed completely
                             feedback_for_coder.append(
@@ -297,7 +303,9 @@ class CSVConversionWorkflow:
                             else "Tester phase failed"
                         )
                         await self._handle_job_failure(
-                            job_id_str, error_msg, tester_result.get("error") if tester_result else "Tester phase failed"
+                            job_id_str,
+                            error_msg,
+                            tester_result.get("error") if tester_result else "Tester phase failed",
                         )
                         final_status = JobStatus.FAILED
                         success = False
@@ -416,13 +424,7 @@ class CSVConversionWorkflow:
         try:
             planner_agent = self.agent_factory.get_planner_agent()
 
-            if use_full_paths and not input_file_path.startswith("/"):
-                # Assuming S3 paths are passed, which are now local
-                resolved_input_path = str(Path(input_file_path).resolve())
-                resolved_expected_path = (
-                    str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
-                )
-            elif use_full_paths:
+            if use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
                 resolved_expected_path = (
                     str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
@@ -488,10 +490,7 @@ class CSVConversionWorkflow:
         try:
             coder_agent = self.agent_factory.get_coder_agent()
 
-            if use_full_paths and not input_file_path.startswith("/"):
-                # Assuming S3 paths are passed, which are now local
-                resolved_input_path = str(Path(input_file_path).resolve())
-            elif use_full_paths:
+            if use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
             else:
                 resolved_input_path = str((Path(settings.upload_dir) / input_file_path).resolve())
@@ -511,28 +510,39 @@ class CSVConversionWorkflow:
             start_time = time.time()
             result = await coder_agent.execute_task(task_data)
             execution_time = time.time() - start_time
-
+            local_script_path = Path(input_file_path).parent / "generatedScript.py"
             # Save generated script to job and user-specific directory
             if result["success"] and result.get("script_content"):
                 # Get job data to extract client_id
+
+                with open(local_script_path, "w", encoding="utf-8") as f:
+                    f.write(result["script_content"])
                 job_data = await self.job_manager.get_job(job_id)
                 if job_data and job_data.get("client_id"):
                     from utils.file_handlers import save_user_script
 
                     client_id = job_data["client_id"]
-                    script_path = await save_user_script(result["script_content"], client_id, job_id)
+                    s3_script_path = await save_user_script(result["script_content"], client_id, job_id)
 
                     # Save to job manager with script path
-                    await self.job_manager.set_generated_script(job_id, result["script_content"], str(script_path))
-                    result["generated_script_path"] = str(script_path)
+                    await self.job_manager.set_generated_script(
+                        job_id,
+                        result["script_content"],
+                        str(local_script_path),
+                    )
+                    result["generated_script_path"] = str(local_script_path)
                 else:
                     # Fallback to original method if no client_id
                     from uuid import uuid4
 
                     temp_client_id = str(uuid4())
-                    script_path = await save_user_script(result["script_content"], temp_client_id, job_id)
-                    await self.job_manager.set_generated_script(job_id, result["script_content"], str(script_path))
-                    result["generated_script_path"] = str(script_path)
+                    s3_script_path = await save_user_script(result["script_content"], temp_client_id, job_id)
+                    await self.job_manager.set_generated_script(
+                        job_id,
+                        result["script_content"],
+                        str(local_script_path),
+                    )
+                    result["generated_script_path"] = str(local_script_path)
 
             # Add agent result to job
             await self.job_manager.add_agent_result(
@@ -579,21 +589,14 @@ class CSVConversionWorkflow:
             generated_script_path = coder_result["generated_script_path"]
             local_script_path = None
 
-            if use_full_paths and generated_script_path.startswith(f"s3://{settings.aws_bucket_name}"):
+            if use_full_paths and generated_script_path.startswith("s3://"):
                 temp_dir_tester = tempfile.TemporaryDirectory()
                 temp_dir_path = Path(temp_dir_tester.name)
                 local_script_path = temp_dir_path / "generated_script.py"
-                s3_script_key = "/".join(generated_script_path.split("/")[3:])
-                download_from_s3(s3_script_key, local_script_path)
+                download_from_s3(generated_script_path, local_script_path)
                 generated_script_path = str(local_script_path)
 
-            if use_full_paths and not input_file_path.startswith("/"):
-                # Assuming S3 paths are passed, which are now local
-                resolved_input_path = str(Path(input_file_path).resolve())
-                resolved_expected_path = (
-                    str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None
-                )
-            elif use_full_paths:
+            if use_full_paths:
                 resolved_input_path = str(Path(input_file_path).resolve())
                 resolved_expected_path = (
                     str(Path(expected_output_file_path).resolve()) if expected_output_file_path else None

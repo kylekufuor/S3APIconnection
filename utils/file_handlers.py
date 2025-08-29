@@ -617,10 +617,16 @@ async def upload_to_s3(source: str, s3_path: str):
 
     try:
         if source.startswith("s3://"):
-            # It's already an S3 path, so we might need to copy it
-            # For simplicity, we'll just log it for now
-            logger.info(f"Source is already in S3: {source}")
-            return
+            source_bucket, source_key = source.replace("s3://", "").split("/", 1)
+            
+            if source_bucket == bucket_name and source_key == s3_path:
+                logger.info(f"Source and destination are the same, skipping copy: {source}")
+                return
+
+            logger.info(f"Copying file from {source} to s3://{bucket_name}/{s3_path}")
+            copy_source = {"Bucket": source_bucket, "Key": source_key}
+            s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=s3_path)
+
         elif source.startswith("http://") or source.startswith("https://"):
             # Handle URL
             import httpx
@@ -665,10 +671,15 @@ async def save_job_metadata_to_s3(metadata: JobMetadata, user_id: str, job_id: s
 def download_from_s3(s3_path: str, local_path: Path):
     """Download a file from S3 to a local path."""
     s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
     try:
-        s3_client.download_file(bucket_name, s3_path, str(local_path))
+        parsed_url = urlparse(s3_path)
+        bucket_name = parsed_url.netloc
+        key = parsed_url.path.lstrip('/')
+        s3_client.download_file(bucket_name, key, str(local_path))
         logger.info(f"Downloaded file from S3: {s3_path} to {local_path}")
     except ClientError as e:
         logger.error(f"Error downloading from S3: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during S3 download: {e}")
         raise

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from core.config import settings
 from models.schemas import JobStatus, OperationMode, TrainingJobRequest, JobMetadata
 from utils.file_handlers import create_s3_folders, upload_to_s3, save_job_metadata_to_s3
 
@@ -116,6 +117,7 @@ class JobManager:
         async with self._lock:
             job_id = str(uuid4())
             user_id = request.user_id
+            bucket_name = settings.aws_bucket_name
 
             # 1. Create S3 folder structure
             create_s3_folders(user_id, job_id)
@@ -133,11 +135,13 @@ class JobManager:
             await save_job_metadata_to_s3(metadata, user_id, job_id)
 
             # 3. Upload files to S3
-            input_file_path = f"{user_id}/{job_id}/input/input.csv"
-            await upload_to_s3(request.input_file, input_file_path)
+            input_file_key = f"{user_id}/{job_id}/input/input.csv"
+            await upload_to_s3(request.input_file, input_file_key)
+            input_file_path = f"s3://{bucket_name}/{input_file_key}"
 
-            expected_output_file_path = f"{user_id}/{job_id}/input/expected_output.csv"
-            await upload_to_s3(request.expected_output_file, expected_output_file_path)
+            expected_output_file_key = f"{user_id}/{job_id}/input/expected_output.csv"
+            await upload_to_s3(request.expected_output_file, expected_output_file_key)
+            expected_output_file_path = f"s3://{bucket_name}/{expected_output_file_key}"
 
             # 4. Create job in JobManager
             job_data: Dict[str, Any] = {
