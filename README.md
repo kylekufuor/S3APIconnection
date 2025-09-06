@@ -1,6 +1,6 @@
 # AI CSV Converter
 
-AI-powered CSV to CSV converter using CrewAI agents
+AI-powered CSV to CSV converter using CrewAI agents with high-performance multi-process architecture
 
 ## API Endpoints
 
@@ -55,6 +55,19 @@ AI-powered CSV to CSV converter using CrewAI agents
 **Responses:**
 
 *   `202 Accepted`: Successful Response (ConversionJobResponse)
+*   `422 Unprocessable Entity`: Validation Error (HTTPValidationError)
+
+### `GET /api/v1/queue/status`
+
+**Summary:** Get workflow queue status
+
+**Description:** Get the current status of the workflow processing queue and worker utilization.
+
+**Security:** Requires `X-API-KEY` header.
+
+**Responses:**
+
+*   `200 OK`: Queue status with worker utilization metrics
 *   `422 Unprocessable Entity`: Validation Error (HTTPValidationError)
 
 ### `GET /api/v1/users/{client_id}/jobs`
@@ -132,10 +145,155 @@ AI-powered CSV to CSV converter using CrewAI agents
 
     The API documentation will be available at `http://localhost:8000/docs`.
 
+## Architecture Overview
+
+### Current Multi-Process Architecture (v2.0)
+
+The API now uses a high-performance multi-process architecture to handle concurrent training requests without blocking:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    FastAPI Server (Main Process)            │
+├─────────────────────────────────────────────────────────────┤
+│  ├── API Endpoints (Async)                                  │
+│  ├── Authentication & Validation                            │
+│  ├── S3 File Operations (Async)                             │
+│  └── Job Management (Async)                                 │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  │ ProcessPoolExecutor Queue
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Worker Process Pool (32 Workers Max)           │
+├─────────────────────────────────────────────────────────────┤
+│  Worker 2: CrewAI Workflow (Planner → Coder → Tester)       │
+│  Worker 1: CrewAI Workflow (Planner → Coder → Tester)       │
+│  Worker 3: CrewAI Workflow (Planner → Coder → Tester)       │
+│  ...                                                        │
+│  Worker N: CrewAI Workflow (Planner → Coder → Tester)       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Benefits
+
+1. **🚀 True Concurrency**: Training jobs run in isolated processes, never blocking the API
+2. **📈 High Throughput**: Multiple training jobs can run simultaneously 
+3. **💪 Resource Optimization**: Automatic worker scaling based on CPU cores
+4. **🔄 Intelligent Queuing**: Jobs queue automatically when all workers are busy
+5. **📀 Real-time Monitoring**: Queue status and worker utilization endpoints
+6. **🛡️ Fault Isolation**: Worker crashes don't affect the main API server
+7. **🔒 Secure Access**: All workflow endpoints require API key authentication
+8. **⚙️ Event Loop Isolation**: Fresh asyncio components per worker prevent event loop conflicts
+
+### Performance Estimates
+
+#### Current Multi-Process Architecture
+**Server Specs**: 32 vCPU, 32GB RAM
+
+- **Max Concurrent Training Jobs**: 32 (one per worker)
+- **Training Job Duration**: 2-5 minutes average
+- **API Response Time**: <100ms (never blocked by training)
+- **Throughput**: ~6-15 training jobs per minute
+- **Queue Capacity**: Unlimited (memory permitting)
+- **Fast Operations**: Health checks, job listings remain <1s always
+
+**Estimated Performance**:
+```
+Training Requests per Second: 0.1-0.25 RPS sustainable
+Peak Burst Handling: Up to 32 simultaneous jobs
+API Responsiveness: Always <100ms for non-training endpoints
+Memory Usage: ~1GB per active training job (32GB total capacity)
+Concurrency: True multiprocess isolation prevents blocking
+Event Loop Safety: Fresh asyncio components per worker
+```
+
+## Future Architecture: Distributed Worker System
+
+### Planned Enhancement: Celery/Redis Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    FastAPI Server Cluster                   │
+├─────────────────────────────────────────────────────────────┤
+│  ├── Multiple API Instances (Load Balanced)                 │
+│  ├── Instant Response (<50ms)                               │
+│  └── Job Submission Only                                    │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  │ Redis Queue
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Redis Message Broker                       │
+├─────────────────────────────────────────────────────────────┤
+│  ├── Job Queue Management                                   │
+│  ├── Result Storage                                         │
+│  ├── Worker Health Monitoring                               │
+│  └── Retry & Error Handling                                 │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  │ Multiple Worker Nodes
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Celery Worker Cluster                          │
+├─────────────────────────────────────────────────────────────┤
+│  Node 1: 32 Workers × CrewAI Workflows                      │
+│  Node 2: 32 Workers × CrewAI Workflows                      │
+│  Node 3: 32 Workers × CrewAI Workflows                      │
+│  ...                                                        │
+│  Node N: 32 Workers × CrewAI Workflows                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Enhanced Performance Estimates
+**Distributed Setup**: 4 worker nodes × 32 workers each = 128 concurrent jobs
+
+- **Max Concurrent Training Jobs**: 128+ (horizontal scaling)
+- **API Response Time**: <50ms (completely decoupled)
+- **Throughput**: ~25-65 training jobs per minute
+- **Fault Tolerance**: Individual worker/node failures don't affect system
+- **Auto-scaling**: Dynamic worker allocation based on queue depth
+- **Geographic Distribution**: Workers can be in different regions
+
+**Estimated Performance**:
+```
+Training Requests per Second: 0.4-1.0 RPS sustainable  
+Peak Burst Handling: 128+ simultaneous jobs
+API Responsiveness: Always <50ms for all endpoints
+Horizontal Scaling: Add nodes to increase capacity linearly
+Fault Tolerance: 99.9% uptime with proper redundancy
+```
+
+### Migration Benefits (Current vs Future)
+
+| Metric                | Current (Multi-Process) | Future (Celery/Redis) | Improvement       |
+| --------------------- | ----------------------- | --------------------- | ----------------- |
+| Max Concurrent Jobs   | 32                      | 128+                  | 4x+               |
+| API Response Time     | <100ms                  | <50ms                 | 2x faster         |
+| Throughput (jobs/min) | 6-15                    | 25-65                 | 4x+               |
+| Fault Tolerance       | Single point of failure | Distributed           | High availability |
+| Scaling               | Vertical only           | Horizontal            | Unlimited         |
+| Maintenance           | Restart affects all     | Rolling updates       | Zero downtime     |
+
 ## How to Run Tests
 
 ```bash
 pytest
+```
+
+### Concurrency Testing
+
+```bash
+# Test concurrent request handling
+python test_concurrent_requests.py
+
+# Test focused concurrency (pure API performance)
+python test_concurrency_focused.py
+
+# Test new multiprocess workflow executor
+python test_workflow_executor.py
+
+# Check workflow queue status (requires API key)
+curl -H "X-API-KEY: YOUR_API_KEY" http://localhost:8000/api/v1/queue/status
 ```
 
 (Note: Ensure you have `pytest` installed: `pip install pytest`)

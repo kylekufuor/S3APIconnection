@@ -8,8 +8,16 @@ This is an AI-powered CSV to CSV converter using CrewAI agents. The system conve
 
 ## Core Architecture
 
+### High-Performance Multi-Process System (v2.0)
+The application now uses a sophisticated multi-process architecture to handle concurrent training requests:
+
+- **FastAPI Server** (Main Process): Handles all API requests, authentication, and S3 operations
+- **ProcessPoolExecutor** (`core/workflow_executor.py`): Manages worker processes with intelligent queuing
+- **Worker Processes** (Up to 32): Isolated processes running CrewAI workflows
+- **Queue Management**: Automatic queuing when all workers are busy
+
 ### Multi-Agent System
-The application uses a three-agent CrewAI workflow:
+Each worker process runs a three-agent CrewAI workflow:
 
 - **Planner Agent** (`agents/planner_agent.py`): Analyzes input/output CSV files and creates transformation plans
 - **Coder Agent** (`agents/coder_agent.py`): Generates Python scripts based on the plan
@@ -19,6 +27,7 @@ The agents communicate through feedback loops, allowing up to 5 improvement cycl
 
 ### Key Components
 
+- **Workflow Executor** (`core/workflow_executor.py`): High-performance process pool manager for CrewAI workflows
 - **Workflow Orchestration** (`core/workflow.py`): Main orchestrator that manages the multi-agent workflow
 - **Job Management** (`utils/job_manager.py`): Persistent job state management with JSON storage
 - **File Handling** (`utils/file_handlers.py`): S3 integration for file storage and retrieval
@@ -28,7 +37,9 @@ The agents communicate through feedback loops, allowing up to 5 improvement cycl
 FastAPI application with:
 - **Training Endpoint**: `/api/v1/train` - Creates training jobs from input/expected output pairs
 - **Inference Endpoint**: `/api/v1/inference/run` - Runs inference using trained models
+- **Queue Status**: `/api/v1/queue/status` - Monitor workflow queue and worker utilization
 - **Job Management**: User job listing and deletion endpoints
+- **Security**: All API endpoints require `X-API-KEY` authentication (except `/health`)
 
 ## Development Commands
 
@@ -66,6 +77,9 @@ python -c "from test_api import test_training_endpoint; test_training_endpoint()
 
 # Test concurrent request handling
 python test_concurrent_requests.py
+
+# Test new workflow executor (multiprocess concurrency)
+python test_workflow_executor.py
 ```
 
 ### Code Quality
@@ -153,13 +167,24 @@ Use `test_api.py` as template for API testing. The file includes examples for:
 - Check `temp/jobs.json` for job state persistence
 - Monitor agent feedback loops in workflow execution
 - Use structured logging with loguru for component-specific logs
+- **Multiprocess Debugging**:
+  - Monitor worker processes: `ps aux | grep python`
+  - Check queue status: `curl -H "X-API-KEY: YOUR_KEY" http://localhost:8000/api/v1/queue/status`
+  - Worker logs include process IDs for isolation tracking
+  - Each worker creates fresh event loops to prevent asyncio conflicts
 
 ### Performance and Concurrency
-- All S3 operations are async using `run_in_executor()` to prevent blocking
-- File I/O operations use `aiofiles` for async file handling
-- JobManager uses separate read/write locks for better concurrency
-- Read operations (get_job, list_jobs) don't block write operations
-- Long-running tasks (training, inference) run as background tasks
+- **True Multi-Process Concurrency**: Training jobs run in isolated processes, never blocking the API
+- **Intelligent Queuing**: ProcessPoolExecutor with up to 32 workers and automatic queuing
+- **Event Loop Isolation**: Each worker process creates fresh asyncio components to prevent event loop conflicts
+- **Process-Safe Instances**: Fresh `JobManager` and `AgentFactory` instances per worker to avoid shared asyncio objects
+- **All S3 operations are async** using `run_in_executor()` to prevent blocking
+- **File I/O operations use `aiofiles`** for async file handling
+- **JobManager uses separate read/write locks** for better concurrency
+- **Read operations** (get_job, list_jobs) don't block write operations
+- **Worker Process Isolation**: Individual worker crashes don't affect the main API
+- **Real-time Monitoring**: Queue status endpoint (`/api/v1/queue/status`) for monitoring
+- **Secure Authentication**: All workflow management endpoints require API key authentication
 
 ## Common Operations
 
@@ -171,6 +196,23 @@ job_data = await job_manager.create_job(
     input_file="input.csv", 
     client_id="test-user"
 )
+```
+
+### Submitting Training Workflow
+```python
+from core.workflow_executor import workflow_executor
+success = await workflow_executor.submit_workflow(
+    job_id="training-job",
+    input_file_path="path/to/input.csv",
+    expected_output_file_path="path/to/expected.csv"
+)
+```
+
+### Monitoring Queue Status
+```python
+from core.workflow_executor import workflow_executor
+status = await workflow_executor.get_queue_status()
+print(f"Active workers: {status['active_jobs']}/{status['max_workers']}")
 ```
 
 ### Running Inference
