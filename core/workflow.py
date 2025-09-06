@@ -925,7 +925,7 @@ class CSVConversionWorkflow:
             import base64
 
             with open(local_path, "wb") as f:
-                f.write(base64.b64decode(input_file))
+                f.write(base64.b64decode(input_file.split(";base64,")[-1]))
 
     def _is_value_mapping_issue(self, tester_result: Dict[str, Any]) -> bool:
         """Check if the test failure is due to value mapping issues."""

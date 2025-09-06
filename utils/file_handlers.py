@@ -573,6 +573,11 @@ def get_s3_client():
         "s3",
         aws_access_key_id=settings.aws_access_key_id,
         aws_secret_access_key=settings.aws_secret_access_key,
+        config=boto3.session.Config(
+            connect_timeout=10,
+            read_timeout=30,
+            retries={'max_attempts': 3, 'mode': 'standard'}
+        )
     )
 
 
@@ -586,28 +591,33 @@ def s3_folder_exists(s3_client, bucket_name, folder_path):
         return False
 
 
-def create_s3_folders(user_id: str, job_id: str):
+async def create_s3_folders(user_id: str, job_id: str):
     """Create the folder structure in S3 for a job."""
-    s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
+    loop = asyncio.get_event_loop()
 
-    base_path = f"{user_id}/{job_id}/"
-    folders_to_create = ["input/", "output/", "script/"]
+    def _create_folders():
+        s3_client = get_s3_client()
+        bucket_name = settings.aws_bucket_name
 
-    for folder in folders_to_create:
-        folder_path = f"{base_path}{folder}"
-        if not s3_folder_exists(s3_client, bucket_name, folder_path):
-            try:
-                s3_client.put_object(Bucket=bucket_name, Key=folder_path)
-                logger.info(f"Created S3 folder: {folder_path}")
-            except ClientError as e:
-                logger.error(f"Error creating S3 folder: {e}")
-                raise
+        base_path = f"{user_id}/{job_id}/"
+        folders_to_create = ["input/", "output/", "script/"]
+
+        for folder in folders_to_create:
+            folder_path = f"{base_path}{folder}"
+            if not s3_folder_exists(s3_client, bucket_name, folder_path):
+                try:
+                    s3_client.put_object(Bucket=bucket_name, Key=folder_path)
+                    logger.info(f"Created S3 folder: {folder_path}")
+                except ClientError as e:
+                    logger.error(f"Error creating S3 folder: {e}")
+                    raise
+
+    await loop.run_in_executor(None, _create_folders)
 
 
 async def upload_to_s3(source: str, s3_path: str):
     """Upload a file to S3 from a URL, local path, or base64 string."""
-    s3_client = get_s3_client()
+    loop = asyncio.get_event_loop()
     bucket_name = settings.aws_bucket_name
 
     try:
@@ -619,8 +629,13 @@ async def upload_to_s3(source: str, s3_path: str):
                 return
 
             logger.info(f"Copying file from {source} to s3://{bucket_name}/{s3_path}")
-            copy_source = {"Bucket": source_bucket, "Key": source_key}
-            s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=s3_path)
+
+            def _copy_s3_object():
+                s3_client = get_s3_client()
+                copy_source = {"Bucket": source_bucket, "Key": source_key}
+                s3_client.copy_object(CopySource=copy_source, Bucket=bucket_name, Key=s3_path)
+
+            await loop.run_in_executor(None, _copy_s3_object)
 
         elif source.startswith("http://") or source.startswith("https://"):
             # Handle URL
@@ -629,10 +644,29 @@ async def upload_to_s3(source: str, s3_path: str):
             async with httpx.AsyncClient() as client:
                 response = await client.get(source)
                 response.raise_for_status()
-                s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=response.content)
+
+                def _upload_from_url():
+                    s3_client = get_s3_client()
+                    s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=response.content)
+
+                await loop.run_in_executor(None, _upload_from_url)
         else:
-            data = base64.b64decode(source)
-            s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=data)
+            # Handle base64 encoded data
+            try:
+                # Handle data URI format or plain base64
+                if ";base64," in source:
+                    data = base64.b64decode(source.split(";base64,")[-1])
+                else:
+                    data = base64.b64decode(source)
+            except Exception as decode_error:
+                logger.error(f"Failed to decode base64 data: {decode_error}")
+                raise ValueError(f"Invalid base64 data: {decode_error}")
+
+            def _upload_from_base64():
+                s3_client = get_s3_client()
+                s3_client.put_object(Bucket=bucket_name, Key=s3_path, Body=data)
+
+            await loop.run_in_executor(None, _upload_from_base64)
 
         logger.info(f"Uploaded file to S3: {s3_path}")
 
@@ -646,16 +680,21 @@ async def upload_to_s3(source: str, s3_path: str):
 
 async def save_job_metadata_to_s3(metadata: JobMetadata, user_id: str, job_id: str):
     """Save the job metadata to a JSON file in S3."""
-    s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
-    metadata_path = f"{user_id}/{job_id}/job_metadata.json"
+    loop = asyncio.get_event_loop()
 
-    try:
-        s3_client.put_object(Bucket=bucket_name, Key=metadata_path, Body=metadata.model_dump_json(indent=2))
-        logger.info(f"Saved job metadata to S3: {metadata_path}")
-    except ClientError as e:
-        logger.error(f"Error saving job metadata to S3: {e}")
-        raise
+    def _save_metadata():
+        s3_client = get_s3_client()
+        bucket_name = settings.aws_bucket_name
+        metadata_path = f"{user_id}/{job_id}/job_metadata.json"
+
+        try:
+            s3_client.put_object(Bucket=bucket_name, Key=metadata_path, Body=metadata.model_dump_json(indent=2))
+            logger.info(f"Saved job metadata to S3: {metadata_path}")
+        except ClientError as e:
+            logger.error(f"Error saving job metadata to S3: {e}")
+            raise
+
+    await loop.run_in_executor(None, _save_metadata)
 
 
 async def update_job_metadata_to_s3(
@@ -665,23 +704,29 @@ async def update_job_metadata_to_s3(
     progress_details: Dict[str, Any],
 ):
     """Update job metadata to S3."""
+    loop = asyncio.get_event_loop()
+
     try:
         client_id = job.get("client_id")
         if client_id:
-            s3_client = get_s3_client()
             bucket_name = settings.aws_bucket_name
             job_metadata_path = f"{client_id}/{job_id}/job_metadata.json"
 
-            response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
-            metadata_content = response["Body"].read().decode("utf-8")
-            metadata = JobMetadata.model_validate_json(metadata_content)
+            def _update_metadata():
+                s3_client = get_s3_client()
+                response = s3_client.get_object(Bucket=bucket_name, Key=job_metadata_path)
+                metadata_content = response["Body"].read().decode("utf-8")
+                metadata = JobMetadata.model_validate_json(metadata_content)
 
-            metadata.job_status = status
-            metadata.finished_at = job["completed_at"]
+                metadata.job_status = status
+                metadata.finished_at = job["completed_at"]
 
-            if progress_details and "script_path" in progress_details:
-                metadata.script_path = progress_details["script_path"]
+                if progress_details and "script_path" in progress_details:
+                    metadata.script_path = progress_details["script_path"]
 
+                return metadata
+
+            metadata = await loop.run_in_executor(None, _update_metadata)
             await save_job_metadata_to_s3(metadata, client_id, job_id)
     except ClientError as e:
         logger.error(f"Failed to update S3 metadata for job {job_id}: {e}")
@@ -706,9 +751,14 @@ def download_from_s3(s3_path: str, local_path: Path):
         raise
 
 
+# Simple cache for user jobs (cache for 30 seconds)
+_user_jobs_cache = {}
+_cache_ttl = 30  # seconds
+
 async def get_user_jobs_from_s3(user_id: str) -> List[Dict[str, Any]]:
     """
     List all jobs for a user by reading metadata from S3.
+    Implements simple caching to avoid repeated S3 calls.
 
     Args:
         user_id: The ID of the user.
@@ -716,37 +766,60 @@ async def get_user_jobs_from_s3(user_id: str) -> List[Dict[str, Any]]:
     Returns:
         A list of job metadata dictionaries.
     """
-    s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
-    prefix = f"{user_id}/"
+    import time
+    
+    # Check cache first
+    cache_key = f"user_jobs_{user_id}"
+    current_time = time.time()
+    
+    if cache_key in _user_jobs_cache:
+        cached_data, cached_time = _user_jobs_cache[cache_key]
+        if current_time - cached_time < _cache_ttl:
+            logger.info(f"Returning cached jobs for user {user_id}")
+            return cached_data
+    
+    loop = asyncio.get_event_loop()
 
-    jobs = []
-    try:
-        # List objects with the user's prefix
-        paginator = s3_client.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix, Delimiter="/")
+    def _get_user_jobs():
+        s3_client = get_s3_client()
+        bucket_name = settings.aws_bucket_name
+        prefix = f"{user_id}/"
 
-        for page in pages:
-            if "CommonPrefixes" not in page:
-                continue
+        jobs = []
+        try:
+            # List objects with the user's prefix
+            paginator = s3_client.get_paginator("list_objects_v2")
+            pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix, Delimiter="/")
 
-            for common_prefix in page.get("CommonPrefixes", []):
-                job_id = common_prefix.get("Prefix").split("/")[-2]
-                metadata_key = f"{user_id}/{job_id}/job_metadata.json"
+            for page in pages:
+                if "CommonPrefixes" not in page:
+                    continue
 
-                try:
-                    metadata_obj = s3_client.get_object(Bucket=bucket_name, Key=metadata_key)
-                    metadata_content = metadata_obj["Body"].read().decode("utf-8")
-                    jobs.append(json.loads(metadata_content))
-                except ClientError as e:
-                    if e.response["Error"]["Code"] == "NoSuchKey":
-                        logger.warning(f"Metadata file not found for job {job_id} of user {user_id}")
-                    else:
-                        raise
-    except ClientError as e:
-        logger.error(f"Error listing jobs for user {user_id} from S3: {e}")
-        raise
+                for common_prefix in page.get("CommonPrefixes", []):
+                    job_id = common_prefix.get("Prefix").split("/")[-2]
+                    metadata_key = f"{user_id}/{job_id}/job_metadata.json"
 
+                    try:
+                        metadata_obj = s3_client.get_object(Bucket=bucket_name, Key=metadata_key)
+                        metadata_content = metadata_obj["Body"].read().decode("utf-8")
+                        jobs.append(json.loads(metadata_content))
+                    except ClientError as e:
+                        if e.response["Error"]["Code"] == "NoSuchKey":
+                            logger.warning(f"Metadata file not found for job {job_id} of user {user_id}")
+                        else:
+                            raise
+        except ClientError as e:
+            logger.error(f"Error listing jobs for user {user_id} from S3: {e}")
+            raise
+
+        return jobs
+    
+    jobs = await loop.run_in_executor(None, _get_user_jobs)
+    
+    # Cache the result
+    _user_jobs_cache[cache_key] = (jobs, current_time)
+    logger.info(f"Cached {len(jobs)} jobs for user {user_id}")
+    
     return jobs
 
 
@@ -758,32 +831,37 @@ async def delete_s3_job_folder(user_id: str, job_id: str) -> None:
         user_id: The ID of the user.
         job_id: The ID of the job to delete.
     """
-    s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
-    prefix = f"{user_id}/{job_id}/"
+    loop = asyncio.get_event_loop()
 
-    try:
-        objects_to_delete = []
-        paginator = s3_client.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+    def _delete_job_folder():
+        s3_client = get_s3_client()
+        bucket_name = settings.aws_bucket_name
+        prefix = f"{user_id}/{job_id}/"
 
-        for page in pages:
-            if "Contents" in page:
-                for obj in page["Contents"]:
-                    objects_to_delete.append({"Key": obj["Key"]})
+        try:
+            objects_to_delete = []
+            paginator = s3_client.get_paginator("list_objects_v2")
+            pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
 
-        if objects_to_delete:
-            s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
-            logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for job {job_id} of user {user_id}")
-        else:
-            logger.info(f"No objects found to delete for job {job_id} of user {user_id}")
+            for page in pages:
+                if "Contents" in page:
+                    for obj in page["Contents"]:
+                        objects_to_delete.append({"Key": obj["Key"]})
 
-    except ClientError as e:
-        logger.error(f"Error deleting job folder {job_id} for user {user_id} from S3: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during S3 job folder deletion: {e}")
-        raise
+            if objects_to_delete:
+                s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
+                logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for job {job_id} of user {user_id}")
+            else:
+                logger.info(f"No objects found to delete for job {job_id} of user {user_id}")
+
+        except ClientError as e:
+            logger.error(f"Error deleting job folder {job_id} for user {user_id} from S3: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during S3 job folder deletion: {e}")
+            raise
+
+    await loop.run_in_executor(None, _delete_job_folder)
 
 
 async def delete_s3_user_folder(user_id: str) -> None:
@@ -793,29 +871,34 @@ async def delete_s3_user_folder(user_id: str) -> None:
     Args:
         user_id: The ID of the user whose folder is to be deleted.
     """
-    s3_client = get_s3_client()
-    bucket_name = settings.aws_bucket_name
-    prefix = f"{user_id}/"
+    loop = asyncio.get_event_loop()
+    
+    def _delete_user_folder():
+        s3_client = get_s3_client()
+        bucket_name = settings.aws_bucket_name
+        prefix = f"{user_id}/"
 
-    try:
-        objects_to_delete = []
-        paginator = s3_client.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+        try:
+            objects_to_delete = []
+            paginator = s3_client.get_paginator("list_objects_v2")
+            pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
 
-        for page in pages:
-            if "Contents" in page:
-                for obj in page["Contents"]:
-                    objects_to_delete.append({"Key": obj["Key"]})
+            for page in pages:
+                if "Contents" in page:
+                    for obj in page["Contents"]:
+                        objects_to_delete.append({"Key": obj["Key"]})
 
-        if objects_to_delete:
-            s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
-            logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for user {user_id}")
-        else:
-            logger.info(f"No objects found to delete for user {user_id}")
+            if objects_to_delete:
+                s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects_to_delete})
+                logger.info(f"Deleted {len(objects_to_delete)} objects from S3 for user {user_id}")
+            else:
+                logger.info(f"No objects found to delete for user {user_id}")
 
-    except ClientError as e:
-        logger.error(f"Error deleting user folder {user_id} from S3: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during S3 user folder deletion: {e}")
-        raise
+        except ClientError as e:
+            logger.error(f"Error deleting user folder {user_id} from S3: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during S3 user folder deletion: {e}")
+            raise
+    
+    await loop.run_in_executor(None, _delete_user_folder)

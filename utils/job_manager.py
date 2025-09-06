@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+import aiofiles
+from asyncio import Lock
 from loguru import logger
 
 from core.config import settings
@@ -19,7 +21,8 @@ class JobManager:
 
     def __init__(self) -> None:
         self._jobs: Dict[str, Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
+        self._write_lock = Lock()  # Write lock for modifying jobs
+        self._read_lock = Lock()   # Read lock for accessing jobs
         self._jobs_file = Path("temp/jobs.json")
         self._load_jobs()
 
@@ -43,7 +46,7 @@ class JobManager:
             logger.error(f"Error loading jobs: {e}")
             self._jobs = {}
 
-    def _save_jobs(self) -> None:
+    async def _save_jobs(self) -> None:
         """Save jobs to persistent storage."""
         try:
             # Ensure temp directory exists
@@ -61,8 +64,8 @@ class JobManager:
                     job_copy["completed_at"] = job_copy["completed_at"].isoformat()
                 jobs_data[job_id] = job_copy
 
-            with open(self._jobs_file, "w") as f:
-                json.dump(jobs_data, f, indent=2)
+            async with aiofiles.open(self._jobs_file, "w") as f:
+                await f.write(json.dumps(jobs_data, indent=2))
         except Exception as e:
             logger.error(f"Error saving jobs: {e}")
 
@@ -78,7 +81,7 @@ class JobManager:
         mode: OperationMode = OperationMode.TRAINING,
     ) -> Dict[str, Any]:
         """Create a new conversion job."""
-        async with self._lock:
+        async with self._write_lock:
             # Generate client_id if not provided
             if client_id is None:
                 client_id = str(uuid4())
@@ -105,7 +108,7 @@ class JobManager:
             }
 
             self._jobs[job_id] = job_data
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
             logger.info(f"Created {mode.value} job: {job_id} for client: {client_id}")
             return job_data
 
@@ -114,13 +117,13 @@ class JobManager:
         request: TrainingJobRequest,
     ) -> Dict[str, Any]:
         """Create a new training job."""
-        async with self._lock:
+        async with self._write_lock:
             job_id = str(uuid4())
             user_id = request.user_id
             bucket_name = settings.aws_bucket_name
 
             # 1. Create S3 folder structure
-            create_s3_folders(user_id, job_id)
+            await create_s3_folders(user_id, job_id)
 
             # 2. Create and save job metadata
             metadata = JobMetadata(
@@ -166,14 +169,14 @@ class JobManager:
             }
 
             self._jobs[job_id] = job_data
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
             logger.info(f"Created training job: {job_id} for user: {user_id}")
             return job_data
 
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a job by ID."""
-        async with self._lock:
-            return self._jobs.get(job_id)
+        async with self._read_lock:
+            return self._jobs.get(job_id).copy() if job_id in self._jobs else None
 
     async def update_job_status(
         self,
@@ -184,7 +187,7 @@ class JobManager:
         error_message: Optional[str] = None,
     ) -> bool:
         """Update job status and progress."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id not in self._jobs:
                 return False
 
@@ -207,7 +210,7 @@ class JobManager:
                 # Update S3 metadata
                 await update_job_metadata_to_s3(job, job_id, status, progress_details)
 
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
             logger.info(f"Updated job {job_id} status to {status}")
             return True
 
@@ -221,7 +224,7 @@ class JobManager:
         execution_time: Optional[float] = None,
     ) -> bool:
         """Add an agent execution result to a job."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id not in self._jobs:
                 return False
 
@@ -236,14 +239,14 @@ class JobManager:
 
             job["agent_results"].append(result)
             job["updated_at"] = datetime.now(timezone.utc)
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
 
             logger.info(f"Added agent result for job {job_id}: {agent_name} - {'success' if success else 'failed'}")
             return True
 
     async def set_generated_script(self, job_id: str, script_content: str, script_path: Optional[str] = None) -> bool:
         """Set the generated script for a job."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id not in self._jobs:
                 return False
 
@@ -251,27 +254,27 @@ class JobManager:
             if script_path:
                 self._jobs[job_id]["generated_script_path"] = script_path
             self._jobs[job_id]["updated_at"] = datetime.now(timezone.utc)
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
 
             logger.info(f"Set generated script for job {job_id}")
             return True
 
     async def set_test_results(self, job_id: str, test_results: Dict[str, Any]) -> bool:
         """Set the test results for a job."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id not in self._jobs:
                 return False
 
             self._jobs[job_id]["test_results"] = test_results
             self._jobs[job_id]["updated_at"] = datetime.now(timezone.utc)
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
 
             logger.info(f"Set test results for job {job_id}")
             return True
 
     async def set_inference_output(self, job_id: str, output_data: str, is_content: bool = False) -> bool:
         """Set the inference output for a job."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id not in self._jobs:
                 return False
 
@@ -291,13 +294,13 @@ class JobManager:
                 logger.info(f"Set inference output file path for job {job_id}")
 
             self._jobs[job_id]["updated_at"] = datetime.now(timezone.utc)
-            self._save_jobs()  # Save to persistent storage
+            await self._save_jobs()  # Save to persistent storage
 
             return True
 
     async def get_inference_output(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get the inference output for a job."""
-        async with self._lock:
+        async with self._read_lock:
             if job_id not in self._jobs:
                 return None
 
@@ -308,12 +311,12 @@ class JobManager:
 
     async def list_jobs(self) -> Dict[str, Dict[str, Any]]:
         """List all jobs."""
-        async with self._lock:
+        async with self._read_lock:
             return self._jobs.copy()
 
     async def delete_job(self, job_id: str) -> bool:
         """Delete a job."""
-        async with self._lock:
+        async with self._write_lock:
             if job_id in self._jobs:
                 del self._jobs[job_id]
                 logger.info(f"Deleted job: {job_id}")
@@ -322,7 +325,7 @@ class JobManager:
 
     async def cleanup_completed_jobs(self, max_age_hours: int = 24) -> int:
         """Clean up completed jobs older than max_age_hours."""
-        async with self._lock:
+        async with self._write_lock:
             now = datetime.now(timezone.utc)
             jobs_to_delete = []
 
@@ -344,7 +347,7 @@ class JobManager:
 
     async def get_jobs_by_client(self, client_id: str) -> Dict[str, Any]:
         """Get all jobs for a specific client."""
-        async with self._lock:
+        async with self._read_lock:
             client_jobs = {}
             client_id_str = str(client_id)
 
