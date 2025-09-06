@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, status
 
-from core.workflow import csv_conversion_workflow
+from core.workflow_executor import workflow_executor
 from models.schemas import (
     ConversionJobResponse,
     InferenceRequest,
@@ -43,18 +43,22 @@ async def start_training_job(request: TrainingJobRequest) -> ConversionJobRespon
         job_data = await job_manager.create_training_job(request)
         job_id = job_data["job_id"]
 
-        # Start the CrewAI workflow in the background
-        asyncio.create_task(
-            csv_conversion_workflow.execute_conversion_job(
-                job_id,
-                input_file_path=job_data["input_file"],
-                expected_output_file_path=job_data["expected_output_file"],
-                job_description=request.description,
-                general_instructions=request.general_instructions,
-                column_instructions=request.column_instructions,
-                use_full_paths=True,  # We are using full S3 paths
-            )
+        # Submit the CrewAI workflow to the process pool
+        workflow_submitted = await workflow_executor.submit_workflow(
+            job_id,
+            input_file_path=job_data["input_file"],
+            expected_output_file_path=job_data["expected_output_file"],
+            job_description=request.description,
+            general_instructions=request.general_instructions,
+            column_instructions=request.column_instructions,
+            use_full_paths=True,  # We are using full S3 paths
         )
+        
+        if not workflow_submitted:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to submit workflow job. Server may be overloaded.",
+            )
 
         return ConversionJobResponse(
             job_id=job_id,
@@ -100,7 +104,11 @@ async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
             description=f"Inference for job {request.job_id}",
         )
 
-        # Start the inference workflow in the background
+        # Submit the inference workflow to the process pool
+        from core.workflow import csv_conversion_workflow
+        
+        # For inference, we still need to use the original workflow since it's a different method
+        # This could be refactored later to also use the process pool
         asyncio.create_task(
             csv_conversion_workflow.run_inference_job(
                 inference_job_id=inference_job_id,
@@ -189,5 +197,33 @@ async def delete_user_folder(user_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete user folder: {str(e)}",
+        )
+
+
+@router.get(
+    "/queue/status",
+    summary="Get workflow queue status",
+    description="Get the current status of the workflow processing queue and worker utilization.",
+)
+async def get_queue_status():
+    """
+    Get current workflow queue status and worker information.
+    """
+    try:
+        status = await workflow_executor.get_queue_status()
+        return {
+            "status": "healthy",
+            "queue_info": status,
+            "capacity_utilization": {
+                "workers_busy_percent": (status["active_jobs"] / status["max_workers"]) * 100,
+                "can_accept_new_jobs": status["available_workers"] > 0,
+                "estimated_wait_time_minutes": max(0, (status["queue_size"] / max(1, status["max_workers"])) * 3)  # Assuming 3 min average per job
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get queue status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get queue status: {str(e)}",
         )
 

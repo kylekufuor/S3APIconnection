@@ -41,11 +41,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings.temp_dir.mkdir(exist_ok=True)
     logger.info(f"Upload directory: {settings.upload_dir}")
     logger.info(f"Temp directory: {settings.temp_dir}")
+    
+    # Initialize workflow executor
+    from core.workflow_executor import workflow_executor
+    logger.info(f"Workflow executor initialized with {workflow_executor.max_workers} workers")
 
     yield
 
     # Shutdown
     logger.info("Shutting down application")
+    # Gracefully shutdown workflow executor
+    workflow_executor.shutdown()
+    logger.info("Workflow executor shutdown complete")
 
 
 def create_app() -> FastAPI:
@@ -79,22 +86,24 @@ def create_app() -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         """Handle HTTP exceptions."""
+        error_response = ErrorResponse(
+            error=exc.detail or "An error occurred", detail=getattr(exc, "detail", None)
+        )
         return JSONResponse(
             status_code=exc.status_code,
-            content=ErrorResponse(
-                error=exc.detail or "An error occurred", detail=getattr(exc, "detail", None)
-            ).model_dump(),
+            content=error_response.model_dump(mode='json'),
         )
 
     @app.exception_handler(Exception)
     async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """Handle general exceptions."""
         logger.error(f"Unhandled exception: {exc}")
+        error_response = ErrorResponse(
+            error="Internal server error", detail=str(exc) if settings.debug else None
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=ErrorResponse(
-                error="Internal server error", detail=str(exc) if settings.debug else None
-            ).model_dump(),
+            content=error_response.model_dump(mode='json'),
         )
 
     # Root endpoint - redirect to docs
@@ -110,6 +119,7 @@ def create_app() -> FastAPI:
     async def health_check() -> dict:
         """Health check endpoint."""
         return {"status": "healthy", "app_name": settings.app_name, "version": settings.app_version}
+
 
     return app
 

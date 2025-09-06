@@ -17,9 +17,17 @@ from utils.job_manager import job_manager
 class CSVConversionWorkflow:
     """Orchestrates the CSV conversion workflow using CrewAI agents."""
 
-    def __init__(self) -> None:
-        self.agent_factory = agent_factory
-        self.job_manager = job_manager
+    def __init__(self, use_fresh_instances: bool = False) -> None:
+        if use_fresh_instances:
+            # Create fresh instances for worker processes to avoid asyncio conflicts
+            from agents.agent_factory import AgentFactory
+            from utils.job_manager import JobManager
+            self.agent_factory = AgentFactory()
+            self.job_manager = JobManager()
+        else:
+            # Use global instances for main process
+            self.agent_factory = agent_factory
+            self.job_manager = job_manager
         self.logger = logger.bind(component="workflow")
 
     async def execute_conversion_job(
