@@ -8,7 +8,7 @@ AI-powered CSV to CSV converter using CrewAI agents with high-performance multi-
 
 **Summary:** Start Training Job
 
-**Description:** Starts a new training job, uploads files to S3, and kicks off the conversion workflow.
+**Description:** Starts a new training job or replaces an existing one. Uploads files to S3 and kicks off the conversion workflow using high-performance multi-process architecture.
 
 **Security:** Requires `X-API-KEY` header.
 
@@ -17,6 +17,7 @@ AI-powered CSV to CSV converter using CrewAI agents with high-performance multi-
 ```json
 {
   "user_id": "string",
+  "job_id": "string | null",
   "input_file": "string",
   "expected_output_file": "string",
   "job_title": "string",
@@ -28,6 +29,10 @@ AI-powered CSV to CSV converter using CrewAI agents with high-performance multi-
   }
 }
 ```
+
+**Job ID Behavior:**
+- **Without `job_id`**: Creates a new job with auto-generated UUID
+- **With `job_id`**: Replaces existing job (deletes S3 folder and recreates)
 
 **Responses:**
 
@@ -68,6 +73,25 @@ AI-powered CSV to CSV converter using CrewAI agents with high-performance multi-
 **Responses:**
 
 *   `200 OK`: Queue status with worker utilization metrics
+*   `422 Unprocessable Entity`: Validation Error (HTTPValidationError)
+
+### `GET /api/v1/{client_id}/{job_id}`
+
+**Summary:** Get specific job metadata
+
+**Description:** Retrieve the complete job metadata JSON for a specific job belonging to a user. Returns metadata from S3 if available, otherwise returns empty JSON {}.
+
+**Security:** Requires `X-API-KEY` header.
+
+**Parameters:**
+
+*   `client_id` (path): string - The user/client ID
+*   `job_id` (path): string - The specific job ID
+
+**Responses:**
+
+*   `200 OK`: Job metadata JSON or empty {} if not found in S3
+*   `403 Forbidden`: Access denied to job metadata
 *   `422 Unprocessable Entity`: Validation Error (HTTPValidationError)
 
 ### `GET /api/v1/users/{client_id}/jobs`

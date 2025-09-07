@@ -35,7 +35,8 @@ The agents communicate through feedback loops, allowing up to 5 improvement cycl
 
 ### API Structure
 FastAPI application with:
-- **Training Endpoint**: `/api/v1/train` - Creates training jobs from input/expected output pairs
+- **Training Endpoint**: `/api/v1/train` - Creates new training jobs or replaces existing ones
+- **Job Metadata Retrieval**: `/api/v1/{client_id}/{job_id}` - Get specific job metadata from S3
 - **Inference Endpoint**: `/api/v1/inference/run` - Runs inference using trained models
 - **Queue Status**: `/api/v1/queue/status` - Monitor workflow queue and worker utilization
 - **Job Management**: User job listing and deletion endpoints
@@ -74,6 +75,12 @@ python test_api.py
 
 # Test individual endpoints
 python -c "from test_api import test_training_endpoint; test_training_endpoint()"
+
+# Test job replacement functionality
+python -c "from test_api import test_training_endpoint_with_replacement; test_training_endpoint_with_replacement()"
+
+# Test job metadata retrieval
+python -c "from test_api import test_get_job_metadata_endpoint; test_get_job_metadata_endpoint()"
 
 # Test concurrent request handling
 python test_concurrent_requests.py
@@ -126,11 +133,13 @@ DEBUG=true  # Debug mode
 - Local temporary files are cleaned up automatically
 
 ### Job Lifecycle
-1. Job creation with unique UUID
-2. File upload to S3 (training mode)
-3. Multi-agent workflow execution with feedback loops
-4. Script storage and metadata persistence
-5. Job completion or failure handling
+1. **Job creation**: With auto-generated UUID or specific job_id for replacement
+2. **S3 setup** (background): Delete existing folder (if replacement), create new structure
+3. **File upload to S3** (background): Copy files to job-specific S3 locations
+4. **Metadata creation**: Generate and save job_metadata.json to S3
+5. **Multi-agent workflow execution**: Planner → Coder → Tester with feedback loops
+6. **Script storage and metadata persistence**: Generated code and results saved
+7. **Job completion or failure handling**: Final status updates
 
 ### Error Handling
 - Comprehensive exception handling with structured error responses
@@ -152,10 +161,12 @@ DEBUG=true  # Debug mode
 
 ### Testing New Endpoints
 Use `test_api.py` as template for API testing. The file includes examples for:
-- Training job creation with S3 files
-- Inference job execution  
-- Base64 encoded file handling
-- User job management
+- **New job creation**: Training jobs with auto-generated UUIDs
+- **Job replacement**: Using specific job_id to replace existing jobs
+- **Job metadata retrieval**: GET endpoint to fetch job metadata from S3
+- **Inference job execution**: Running trained models on new data
+- **Base64 encoded file handling**: Direct file upload support
+- **User job management**: List and delete user jobs
 
 ### Working with S3 Integration
 - Files support S3 URIs, URLs, and Base64 encoding
@@ -188,14 +199,41 @@ Use `test_api.py` as template for API testing. The file includes examples for:
 
 ## Common Operations
 
-### Manual Job Creation
+### Manual Job Creation (New)
 ```python
 from utils.job_manager import job_manager
+# Create new job with auto-generated UUID
 job_data = await job_manager.create_job(
-    job_id="test-job",
     input_file="input.csv", 
     client_id="test-user"
 )
+```
+
+### Manual Job Replacement
+```python
+from utils.job_manager import job_manager
+# Replace existing job with specific job_id
+job_data = await job_manager.create_training_job_fast(
+    TrainingJobRequest(
+        user_id="test-user",
+        job_id="specific-job-123",  # This triggers replacement
+        input_file="s3://bucket/input.csv",
+        expected_output_file="s3://bucket/expected.csv",
+        job_title="Replacement Job",
+        owner="Test User"
+    )
+)
+```
+
+### Get Job Metadata from S3
+```python
+from utils.file_handlers import get_job_metadata_from_s3
+# Retrieve complete job metadata
+metadata = await get_job_metadata_from_s3(
+    client_id="test-user",
+    job_id="job-123"
+)
+# Returns {} if metadata not found, raises HTTPException for other errors
 ```
 
 ### Submitting Training Workflow
