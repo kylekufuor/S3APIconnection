@@ -100,6 +100,65 @@
                 ]
             }
         },
+        "/api/v1/{client_id}/{job_id}": {
+            "get": {
+                "tags": [
+                    "CSV Converter"
+                ],
+                "summary": "Get specific job metadata",
+                "description": "Retrieve the complete job metadata JSON for a specific job belonging to a user.",
+                "operationId": "get_job_metadata_api_v1__client_id___job_id__get",
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "client_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Client Id"
+                        }
+                    },
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Job Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true,
+                                    "title": "Response Get Job Metadata Api V1  Client Id   Job Id  Get"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/users/{client_id}/jobs": {
             "get": {
                 "tags": [
@@ -242,6 +301,31 @@
                         }
                     }
                 }
+            }
+        },
+        "/api/v1/queue/status": {
+            "get": {
+                "tags": [
+                    "CSV Converter"
+                ],
+                "summary": "Get workflow queue status",
+                "description": "Get the current status of the workflow processing queue and worker utilization.",
+                "operationId": "get_queue_status_api_v1_queue_status_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyHeader": []
+                    }
+                ]
             }
         },
         "/": {
@@ -398,6 +482,9 @@
                 "type": "string",
                 "enum": [
                     "pending",
+                    "initializing",
+                    "uploading",
+                    "processing",
                     "planning",
                     "coding",
                     "testing",
@@ -473,6 +560,18 @@
                             }
                         ],
                         "title": "Column Instructions"
+                    },
+                    "job_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Job Id",
+                        "description": "Optional job ID for replacing/updating an existing job. If provided, the existing job will be completely replaced."
                     }
                 },
                 "type": "object",
