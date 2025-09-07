@@ -39,6 +39,12 @@ async def start_training_job(request: TrainingJobRequest) -> ConversionJobRespon
     5. Returns the job information.
     """
     try:
+        # Check if this is a job replacement request
+        if request.job_id:
+            logger.info(f"🔄 Job replacement request for job: {request.job_id}")
+        else:
+            logger.info(f"⚡ New training job creation request")
+            
         # ⚡ SONIC SPEED: Create job record instantly (no S3 operations)
         job_data = await job_manager.create_training_job_fast(request)
         job_id = job_data["job_id"]
@@ -133,6 +139,59 @@ async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start inference job: {str(e)}",
+        )
+
+
+@router.get(
+    "/{client_id}/{job_id}",
+    response_model=Dict[str, Any],
+    summary="Get specific job metadata",
+    description="Retrieve the complete job metadata JSON for a specific job belonging to a user.",
+)
+async def get_job_metadata(client_id: str, job_id: str) -> Dict[str, Any]:
+    """
+    Get detailed metadata for a specific job.
+    
+    Retrieves the complete job_metadata.json file from S3. If the metadata
+    file doesn't exist in S3, returns an empty JSON object {}.
+    
+    Returns either:
+    - Complete job metadata from S3 containing job details, status, processing history, etc.
+    - Empty JSON object {} if metadata file not found in S3
+    
+    Raises HTTPException for other errors (access denied, server errors, etc.)
+    """
+    try:
+        logger.info(f"📄 Retrieving job metadata for {client_id}/{job_id}")
+        
+        # First, try to get metadata from S3 (most complete)
+        try:
+            from utils.file_handlers import get_job_metadata_from_s3
+            logger.info(f"Calling get_job_metadata_from_s3 for {client_id}/{job_id}")
+            job_metadata = await get_job_metadata_from_s3(client_id, job_id)
+            logger.info(f"✅ Retrieved metadata from S3 for job {job_id}")
+            return job_metadata
+            
+        except HTTPException as s3_error:
+            # If S3 metadata not found, return empty JSON
+            if s3_error.status_code == 404:
+                logger.info(f"📂 S3 metadata not found for {client_id}/{job_id}, returning empty JSON")
+                return {}
+            else:
+                # Re-raise other S3 errors (access denied, server errors, etc.)
+                raise s3_error
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error getting job metadata: {e}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve job metadata"
         )
 
 

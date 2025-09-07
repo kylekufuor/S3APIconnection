@@ -189,13 +189,18 @@ def _init_worker_process():
 async def _perform_s3_setup(job_id: str, request_data: Any, process_logger) -> Dict[str, str]:
     """Perform S3 setup operations in worker process for sonic speed."""
     try:
-        process_logger.info(f"⚡ Starting S3 setup for job {job_id}")
-        
         # Extract request data (converted from Pydantic model)
         if hasattr(request_data, 'dict'):
             req_dict = request_data.dict()
         else:
             req_dict = request_data
+        
+        # Check if this is a job replacement scenario
+        is_replacement = bool(req_dict.get('job_id'))
+        if is_replacement:
+            process_logger.info(f"🔄 Starting S3 setup for REPLACEMENT job {job_id}")
+        else:
+            process_logger.info(f"⚡ Starting S3 setup for NEW job {job_id}")
             
         user_id = req_dict['user_id']
         bucket_name = settings.aws_bucket_name
@@ -296,12 +301,17 @@ async def _perform_s3_setup(job_id: str, request_data: Any, process_logger) -> D
     except Exception as e:
         process_logger.error(f"❌ S3 setup failed for job {job_id}: {e}")
         # Update job status to failed
-        await job_manager_instance.update_job_status(
-            job_id,
-            JobStatus.FAILED,
-            current_step="S3 setup failed",
-            error_message=str(e)
-        )
+        try:
+            from utils.job_manager import JobManager
+            job_manager_instance = JobManager()
+            await job_manager_instance.update_job_status(
+                job_id,
+                JobStatus.FAILED,
+                current_step="S3 setup failed",
+                error_message=str(e)
+            )
+        except Exception as update_error:
+            process_logger.error(f"Failed to update job status: {update_error}")
         raise e
 
 

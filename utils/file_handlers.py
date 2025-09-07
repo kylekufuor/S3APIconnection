@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import boto3
 import pandas as pd  # type: ignore
 from botocore.exceptions import ClientError
+from fastapi import HTTPException
 from loguru import logger
 
 from core.config import settings
@@ -755,7 +756,71 @@ def download_from_s3(s3_path: str, local_path: Path):
 _user_jobs_cache = {}
 _cache_ttl = 30  # seconds
 
-async def get_user_jobs_from_s3(user_id: str) -> List[Dict[str, Any]]:
+async def get_job_metadata_from_s3(client_id: str, job_id: str) -> Dict[str, Any]:
+    """Retrieve specific job metadata from S3.
+    
+    Args:
+        client_id: The user/client ID
+        job_id: The specific job ID
+        
+    Returns:
+        Dictionary containing the job metadata
+        
+    Raises:
+        HTTPException: If job not found or access denied
+    """
+    try:
+        bucket_name = settings.aws_bucket_name
+        metadata_key = f"{client_id}/{job_id}/job_metadata.json"
+        
+        logger.info(f"Fetching job metadata: s3://{bucket_name}/{metadata_key}")
+        
+        # Download metadata file from S3
+        s3_client = get_s3_client()
+        response = s3_client.get_object(Bucket=bucket_name, Key=metadata_key)
+        metadata_content = response['Body'].read().decode('utf-8')
+        
+        # Parse JSON metadata
+        job_metadata = json.loads(metadata_content)
+        
+        logger.info(f"Successfully retrieved metadata for job {job_id}")
+        return job_metadata
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchKey':
+            logger.error(f"Job metadata not found: {client_id}/{job_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job {job_id} not found for user {client_id}"
+            )
+        elif error_code == 'AccessDenied':
+            logger.error(f"Access denied to job metadata: {client_id}/{job_id}")
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied to job metadata"
+            )
+        else:
+            logger.error(f"S3 error retrieving job metadata: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to retrieve job metadata from S3"
+            )
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in job metadata: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Job metadata file is corrupted"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving job metadata: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve job metadata"
+        )
+
+
+async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
     """
     List all jobs for a user by reading metadata from S3.
     Implements simple caching to avoid repeated S3 calls.
@@ -864,7 +929,73 @@ async def delete_s3_job_folder(user_id: str, job_id: str) -> None:
     await loop.run_in_executor(None, _delete_job_folder)
 
 
-async def delete_s3_user_folder(user_id: str) -> None:
+async def delete_and_replace_job_folder(user_id: str, job_id: str) -> bool:
+    """Delete an existing job folder completely to prepare for replacement.
+    
+    Args:
+        user_id: The user/client ID
+        job_id: The job ID to delete and replace
+        
+    Returns:
+        bool: True if deletion was successful or job didn't exist
+        
+    Raises:
+        Exception: If deletion fails due to S3 errors
+    """
+    try:
+        bucket_name = settings.aws_bucket_name
+        job_prefix = f"{user_id}/{job_id}/"
+        
+        logger.info(f"🗑️ Deleting existing job folder for replacement: s3://{bucket_name}/{job_prefix}")
+        
+        # Get S3 client
+        s3_client = get_s3_client()
+        
+        # List all objects with the job prefix
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket_name, Prefix=job_prefix)
+        
+        objects_to_delete = []
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    objects_to_delete.append({'Key': obj['Key']})
+        
+        if not objects_to_delete:
+            logger.info(f"No existing job folder found for {user_id}/{job_id} - proceeding with new job creation")
+            return True
+        
+        # Delete all objects in batches (max 1000 per batch)
+        for i in range(0, len(objects_to_delete), 1000):
+            batch = objects_to_delete[i:i + 1000]
+            
+            s3_client.delete_objects(
+                Bucket=bucket_name,
+                Delete={
+                    'Objects': batch,
+                    'Quiet': True
+                }
+            )
+            
+            logger.info(f"Deleted batch of {len(batch)} objects from job folder")
+        
+        logger.info(f"✅ Successfully deleted existing job folder {user_id}/{job_id} ({len(objects_to_delete)} objects)")
+        return True
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchBucket':
+            logger.error(f"S3 bucket not found: {bucket_name}")
+            raise Exception(f"S3 bucket {bucket_name} does not exist")
+        else:
+            logger.error(f"S3 error during job folder deletion: {e}")
+            raise Exception(f"Failed to delete existing job folder: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error during job folder deletion: {e}")
+        raise Exception(f"Failed to delete existing job folder: {e}")
+
+
+async def delete_s3_user_folder(user_id: str):
     """
     Deletes a whole user folder and all its contents from the S3 bucket.
 

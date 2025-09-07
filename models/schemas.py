@@ -178,6 +178,10 @@ class TrainingJobRequest(BaseModel):
     owner: str
     general_instructions: Optional[str] = None
     column_instructions: Optional[Dict[str, str]] = None
+    job_id: Optional[str] = Field(
+        default=None, 
+        description="Optional job ID for replacing/updating an existing job. If provided, the existing job will be completely replaced."
+    )
 
 
 class InferenceRequest(BaseModel):

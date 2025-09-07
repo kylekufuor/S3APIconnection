@@ -183,7 +183,22 @@ class JobManager:
         This enables sonic-speed API responses (<100ms).
         """
         async with self._write_lock:
-            job_id = str(uuid4())
+            # Handle job replacement if job_id is provided
+            if request.job_id:
+                job_id = request.job_id
+                logger.info(f"🔄 Job replacement requested for existing job: {job_id}")
+                
+                # Delete existing job folder for replacement
+                try:
+                    from utils.file_handlers import delete_and_replace_job_folder
+                    await delete_and_replace_job_folder(request.user_id, job_id)
+                    logger.info(f"✅ Existing job {job_id} folder deleted - ready for replacement")
+                except Exception as e:
+                    logger.error(f"❌ Failed to delete existing job folder: {e}")
+                    raise Exception(f"Failed to replace existing job: {e}")
+            else:
+                job_id = str(uuid4())
+                
             user_id = request.user_id
             bucket_name = settings.aws_bucket_name
             
@@ -228,7 +243,8 @@ class JobManager:
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a job by ID."""
         async with self._read_lock:
-            return self._jobs.get(job_id).copy() if job_id in self._jobs else None
+            job = self._jobs.get(job_id)
+            return job.copy() if job else None
 
     async def update_job_status(
         self,
