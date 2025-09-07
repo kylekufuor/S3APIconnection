@@ -177,6 +177,117 @@ def test_delete_user_endpoint():
         print(f"\nAn error occurred while sending the request: {e}")
 
 
+def test_training_endpoint_with_replacement():
+    """Tests the /api/v1/train endpoint with job replacement (optional job_id parameter)."""
+    print("--- Starting API Test for /api/v1/train with Job Replacement ---")
+
+    # Use a specific job_id to replace
+    specific_job_id = "test-replacement-job-123"
+    
+    # --- Prepare Payload ---
+    payload = {
+        "user_id": "test_user_123",
+        "job_id": specific_job_id,  # This is the key - we're replacing this job
+        "input_file": "s3://madular-data-files/Test 2 - Raw.csv",
+        "expected_output_file": "s3://madular-data-files/Test 2 - Expected.csv",
+        "job_title": "Test 2 - Replacement Job",
+        "description": "Testing job replacement functionality",
+        "owner": "Karim",
+        "general_instructions": "",
+        "column_instructions": {
+            "total_price": "multiply `quantity`column by `price_per_unit` column",
+            "order_status": "same as `order_status` input column but first letter capitalized. It has only two valid values  `Shipped` & `Pending`",
+            "shipping_category": "`Standard` if order_status is `Pending`, otherwise `Express`. It has only two valid values  `Standard` & `Express`",
+        },
+    }
+
+    # --- Send Request ---
+    try:
+        print(f"Sending POST request to {BASE_URL}/train with job_id={specific_job_id}")
+        response = requests.post(f"{BASE_URL}/train", json=payload, headers=HEADERS, timeout=30)
+
+        # --- Print Response ---
+        print(f"\nResponse Status Code: {response.status_code}")
+
+        if response.status_code == 202:
+            print("\nSuccessfully started training job with replacement!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError starting training job with replacement.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+    print("\n--- Test Finished ---")
+
+
+def test_get_job_metadata_endpoint():
+    """Tests the new GET /{client_id}/{job_id} endpoint to fetch job metadata."""
+    print("--- Starting API Test for GET /{client_id}/{job_id} ---")
+    
+    client_id = "test_user_123"
+    job_id = "test-replacement-job-123"
+    
+    # --- Send Request ---
+    try:
+        print(f"Sending GET request to {BASE_URL}/{client_id}/{job_id}")
+        response = requests.get(f"{BASE_URL}/{client_id}/{job_id}", headers=HEADERS, timeout=30)
+
+        # --- Print Response ---
+        print(f"\nResponse Status Code: {response.status_code}")
+
+        if response.status_code == 200:
+            print("\nSuccessfully retrieved job metadata!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError retrieving job metadata.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+    print("\n--- Test Finished ---")
+
+
+def test_delete_user_endpoint():
+    """Tests the /delete/user/{user_id} endpoint."""
+    print("--- Starting API Test for /api/v1/delete/user/{user_id} ---")
+    user_id = "test_user_123"
+    job_id = "6d83b9a5-3911-409c-a904-80c0a81ac346"
+    # --- Send Request ---
+    try:
+        print(f"Sending DELETE request to {BASE_URL}/delete/user/{user_id}")
+        response = requests.delete(f"{BASE_URL}/delete/user/{user_id}", headers=HEADERS, timeout=30)
+        print(f"\nResponse Status Code: {response.status_code}")
+        if response.status_code == 204:
+            print("\nSuccessfully deleted job folder!")
+            print("Response JSON:")
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print("\nError deleting job folder.")
+            try:
+                print("Error Response JSON:")
+                print(json.dumps(response.json(), indent=2))
+            except json.JSONDecodeError:
+                print("Could not decode JSON response.")
+                print(f"Raw Response Text: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"\nAn error occurred while sending the request: {e}")
+
+
 if __name__ == "__main__":
     # test_training_endpoint()
 
@@ -184,4 +295,8 @@ if __name__ == "__main__":
 
     # test_list_user_jobs_endpoint()
 
-    test_delete_user_endpoint()
+    # test_delete_user_endpoint()
+    
+    # New test functions
+    test_training_endpoint_with_replacement()
+    # test_get_job_metadata_endpoint()
