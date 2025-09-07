@@ -826,7 +826,7 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
     Implements simple caching to avoid repeated S3 calls.
 
     Args:
-        user_id: The ID of the user.
+        client_id: The ID of the user/client.
 
     Returns:
         A list of job metadata dictionaries.
@@ -834,13 +834,13 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
     import time
     
     # Check cache first
-    cache_key = f"user_jobs_{user_id}"
+    cache_key = f"user_jobs_{client_id}"
     current_time = time.time()
     
     if cache_key in _user_jobs_cache:
         cached_data, cached_time = _user_jobs_cache[cache_key]
         if current_time - cached_time < _cache_ttl:
-            logger.info(f"Returning cached jobs for user {user_id}")
+            logger.info(f"Returning cached jobs for user {client_id}")
             return cached_data
     
     loop = asyncio.get_event_loop()
@@ -848,7 +848,7 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
     def _get_user_jobs():
         s3_client = get_s3_client()
         bucket_name = settings.aws_bucket_name
-        prefix = f"{user_id}/"
+        prefix = f"{client_id}/"
 
         jobs = []
         try:
@@ -862,7 +862,7 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
 
                 for common_prefix in page.get("CommonPrefixes", []):
                     job_id = common_prefix.get("Prefix").split("/")[-2]
-                    metadata_key = f"{user_id}/{job_id}/job_metadata.json"
+                    metadata_key = f"{client_id}/{job_id}/job_metadata.json"
 
                     try:
                         metadata_obj = s3_client.get_object(Bucket=bucket_name, Key=metadata_key)
@@ -870,11 +870,11 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
                         jobs.append(json.loads(metadata_content))
                     except ClientError as e:
                         if e.response["Error"]["Code"] == "NoSuchKey":
-                            logger.warning(f"Metadata file not found for job {job_id} of user {user_id}")
+                            logger.warning(f"Metadata file not found for job {job_id} of user {client_id}")
                         else:
                             raise
         except ClientError as e:
-            logger.error(f"Error listing jobs for user {user_id} from S3: {e}")
+            logger.error(f"Error listing jobs for user {client_id} from S3: {e}")
             raise
 
         return jobs
@@ -883,7 +883,7 @@ async def get_user_jobs_from_s3(client_id: str) -> List[Dict[str, Any]]:
     
     # Cache the result
     _user_jobs_cache[cache_key] = (jobs, current_time)
-    logger.info(f"Cached {len(jobs)} jobs for user {user_id}")
+    logger.info(f"Cached {len(jobs)} jobs for user {client_id}")
     
     return jobs
 
