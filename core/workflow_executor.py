@@ -15,8 +15,11 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
-from models.schemas import JobStatus
+from models.schemas import JobStatus, JobMetadata, TrainingJobRequest
 from utils.job_manager import job_manager
+from utils.file_handlers import create_s3_folders, save_job_metadata_to_s3, upload_to_s3
+from core.config import settings
+from datetime import datetime, timezone
 
 
 class WorkflowExecutorService:
@@ -61,6 +64,8 @@ class WorkflowExecutorService:
         general_instructions: Optional[str] = None,
         column_instructions: Optional[Dict[str, str]] = None,
         use_full_paths: bool = False,
+        perform_s3_setup: bool = False,
+        request_data: Any = None,
     ) -> bool:
         """
         Submit a workflow to be executed in a separate process.
@@ -105,6 +110,8 @@ class WorkflowExecutorService:
                 'general_instructions': general_instructions,
                 'column_instructions': column_instructions,
                 'use_full_paths': use_full_paths,
+                'perform_s3_setup': perform_s3_setup,
+                'request_data': request_data,
             }
 
             # Submit to executor
@@ -179,6 +186,125 @@ def _init_worker_process():
     logger.info(f"Worker process {os.getpid()} initialized")
 
 
+async def _perform_s3_setup(job_id: str, request_data: Any, process_logger) -> Dict[str, str]:
+    """Perform S3 setup operations in worker process for sonic speed."""
+    try:
+        process_logger.info(f"⚡ Starting S3 setup for job {job_id}")
+        
+        # Extract request data (converted from Pydantic model)
+        if hasattr(request_data, 'dict'):
+            req_dict = request_data.dict()
+        else:
+            req_dict = request_data
+            
+        user_id = req_dict['user_id']
+        bucket_name = settings.aws_bucket_name
+        
+        # Update job status to uploading
+        from utils.job_manager import JobManager
+        job_manager_instance = JobManager()
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.PENDING,
+            current_step="Setting up S3 storage",
+            progress_details={
+                "phase": "uploading",
+                "step": "creating_folders", 
+                "progress_percent": 10
+            }
+        )
+        
+        # 1. Create S3 folder structure  
+        await create_s3_folders(user_id, job_id)
+        
+        # Update progress
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.PENDING,
+            current_step="Saving job metadata",
+            progress_details={
+                "phase": "uploading",
+                "step": "saving_metadata",
+                "progress_percent": 30
+            }
+        )
+        
+        # 2. Create and save job metadata
+        metadata = JobMetadata(
+            user_id=user_id,
+            user_name=req_dict['owner'],
+            job_id=job_id,
+            job_title=req_dict['job_title'],
+            job_description=req_dict.get('description'),
+            created_at=datetime.now(timezone.utc),
+            job_status=JobStatus.PENDING,
+        )
+        await save_job_metadata_to_s3(metadata, user_id, job_id)
+        
+        # Update progress
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.PENDING,
+            current_step="Uploading input files",
+            progress_details={
+                "phase": "uploading",
+                "step": "uploading_files",
+                "progress_percent": 50
+            }
+        )
+        
+        # 3. Upload files to S3 (S3-to-S3 copy)
+        input_file_key = f"{user_id}/{job_id}/input/input.csv"
+        await upload_to_s3(req_dict['input_file'], input_file_key)
+        input_file_path = f"s3://{bucket_name}/{input_file_key}"
+        
+        # Update progress
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.PENDING,
+            current_step="Uploading expected output files",
+            progress_details={
+                "phase": "uploading",
+                "step": "uploading_expected",
+                "progress_percent": 80
+            }
+        )
+        
+        expected_output_file_key = f"{user_id}/{job_id}/input/expected_output.csv"
+        await upload_to_s3(req_dict['expected_output_file'], expected_output_file_key)
+        expected_output_file_path = f"s3://{bucket_name}/{expected_output_file_key}"
+        
+        # Final S3 setup complete
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.PENDING,
+            current_step="S3 setup complete - starting AI processing",
+            progress_details={
+                "phase": "processing",
+                "step": "s3_complete",
+                "progress_percent": 100
+            }
+        )
+        
+        process_logger.info(f"✅ S3 setup completed for job {job_id}")
+        
+        return {
+            "input_file_path": input_file_path,
+            "expected_output_file_path": expected_output_file_path
+        }
+        
+    except Exception as e:
+        process_logger.error(f"❌ S3 setup failed for job {job_id}: {e}")
+        # Update job status to failed
+        await job_manager_instance.update_job_status(
+            job_id,
+            JobStatus.FAILED,
+            current_step="S3 setup failed",
+            error_message=str(e)
+        )
+        raise e
+
+
 def _execute_workflow_process(workflow_args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute the CrewAI workflow in a separate process.
@@ -206,6 +332,25 @@ def _execute_workflow_process(workflow_args: Dict[str, Any]) -> Dict[str, Any]:
         asyncio.set_event_loop(loop)
         
         try:
+            # ⚡ SONIC SPEED: Handle S3 setup in worker if needed
+            if workflow_args.get('perform_s3_setup', False):
+                process_logger.info(f"🚀 Performing S3 setup in worker for job {job_id}")
+                
+                # Perform S3 operations asynchronously in worker
+                s3_result = loop.run_until_complete(
+                    _perform_s3_setup(
+                        job_id,
+                        workflow_args['request_data'],
+                        process_logger
+                    )
+                )
+                
+                # Update file paths with S3 results
+                workflow_args['input_file_path'] = s3_result['input_file_path']
+                workflow_args['expected_output_file_path'] = s3_result['expected_output_file_path']
+                
+                process_logger.info(f"✅ S3 setup completed, starting CrewAI workflow")
+            
             # Create fresh workflow instance for this worker process
             # This prevents sharing asyncio objects from the main process
             from core.workflow import CSVConversionWorkflow

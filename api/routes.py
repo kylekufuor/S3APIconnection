@@ -39,19 +39,21 @@ async def start_training_job(request: TrainingJobRequest) -> ConversionJobRespon
     5. Returns the job information.
     """
     try:
-        # Create and manage the job using the job manager
-        job_data = await job_manager.create_training_job(request)
+        # ⚡ SONIC SPEED: Create job record instantly (no S3 operations)
+        job_data = await job_manager.create_training_job_fast(request)
         job_id = job_data["job_id"]
-
-        # Submit the CrewAI workflow to the process pool
+        
+        # 🚀 Submit to worker process (includes S3 setup + CrewAI workflow)
         workflow_submitted = await workflow_executor.submit_workflow(
             job_id,
-            input_file_path=job_data["input_file"],
+            request_data=request,  # Pass full request for S3 operations
+            input_file_path=job_data["input_file"],  # Original S3 paths
             expected_output_file_path=job_data["expected_output_file"],
             job_description=request.description,
             general_instructions=request.general_instructions,
             column_instructions=request.column_instructions,
-            use_full_paths=True,  # We are using full S3 paths
+            use_full_paths=True,
+            perform_s3_setup=True,  # Flag to handle S3 in worker
         )
         
         if not workflow_submitted:

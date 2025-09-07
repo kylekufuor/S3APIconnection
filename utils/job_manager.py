@@ -173,6 +173,58 @@ class JobManager:
             logger.info(f"Created training job: {job_id} for user: {user_id}")
             return job_data
 
+    async def create_training_job_fast(
+        self,
+        request: TrainingJobRequest,
+    ) -> Dict[str, Any]:
+        """Create a training job record INSTANTLY without S3 operations.
+        
+        S3 operations will be handled by the background worker process.
+        This enables sonic-speed API responses (<100ms).
+        """
+        async with self._write_lock:
+            job_id = str(uuid4())
+            user_id = request.user_id
+            bucket_name = settings.aws_bucket_name
+            
+            # Fast job record creation - NO S3 operations!
+            job_data: Dict[str, Any] = {
+                "job_id": job_id,
+                "status": JobStatus.INITIALIZING,  # Will be updated by worker
+                "input_file": request.input_file,  # Original S3 path
+                "expected_output_file": request.expected_output_file,  # Original S3 path
+                "description": request.description,
+                "general_instructions": request.general_instructions,
+                "column_instructions": request.column_instructions,
+                "client_id": user_id,
+                "mode": OperationMode.TRAINING.value,
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+                "current_step": "Job created - initializing S3 setup",
+                "progress_details": {
+                    "phase": "initializing",
+                    "step": "job_created",
+                    "progress_percent": 0
+                },
+                "error_message": None,
+                "generated_script": None,
+                "generated_script_path": None,
+                "test_results": None,
+                "agent_results": [],
+                # Store original request data for worker processing
+                "_request_data": {
+                    "job_title": request.job_title,
+                    "owner": request.owner,
+                    "user_id": user_id,
+                    "bucket_name": bucket_name
+                }
+            }
+            
+            self._jobs[job_id] = job_data
+            await self._save_jobs()  # Fast local save only
+            logger.info(f"⚡ Created FAST training job: {job_id} for user: {user_id} (S3 ops deferred)")
+            return job_data
+
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a job by ID."""
         async with self._read_lock:

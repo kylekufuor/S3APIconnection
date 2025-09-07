@@ -18,6 +18,9 @@ class JobStatus(str, Enum):
     """Status of a CSV conversion job."""
 
     PENDING = "pending"
+    INITIALIZING = "initializing"
+    UPLOADING = "uploading" 
+    PROCESSING = "processing"
     PLANNING = "planning"
     CODING = "coding"
     TESTING = "testing"
