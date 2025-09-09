@@ -808,7 +808,7 @@ class CSVConversionWorkflow:
 
     async def run_inference_job(
         self, inference_job_id: str, user_id: str, training_job_id: str, input_file: str
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Run an inference job using a trained model.
 
@@ -817,6 +817,9 @@ class CSVConversionWorkflow:
             user_id: The ID of the user.
             training_job_id: The ID of the training job to use for the model.
             input_file: The input file for inference (S3 URI, URL, or Base64).
+            
+        Returns:
+            Dictionary containing inference results including base64 encoded script and output CSV.
         """
         self.logger.info(
             f"Starting inference job {inference_job_id} for user {user_id} using training job {training_job_id}"
@@ -842,7 +845,7 @@ class CSVConversionWorkflow:
                     error_msg = f"Generated script not found for training job {training_job_id}"
                     self.logger.error(error_msg)
                     await self._handle_job_failure(inference_job_id, "Script not found", error_msg)
-                    return
+                    return {"success": False, "error": error_msg, "job_id": inference_job_id}
                 else:
                     raise
 
@@ -891,14 +894,42 @@ class CSVConversionWorkflow:
                 error_msg = f"Script execution failed: {result.stderr}"
                 self.logger.error(error_msg)
                 await self._handle_job_failure(inference_job_id, "Script execution failed", error_msg)
-                return
+                
+                # Still return script content even if execution failed
+                import base64
+                with open(local_script_path, 'r', encoding='utf-8') as f:
+                    script_content = f.read()
+                python_script_base64 = base64.b64encode(script_content.encode('utf-8')).decode('utf-8')
+                script_s3_path = f"s3://{bucket_name}/{script_key}"
+                
+                return {
+                    "success": False, 
+                    "error": error_msg, 
+                    "job_id": inference_job_id,
+                    "python_script_base64": python_script_base64,
+                    "output_csv_base64": None,
+                    "output_s3_path": None,
+                    "script_s3_path": script_s3_path,
+                }
 
-            # 5. Upload the output file to S3
+            # 5. Read script content and encode as base64
+            import base64
+            with open(local_script_path, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+            python_script_base64 = base64.b64encode(script_content.encode('utf-8')).decode('utf-8')
+
+            # 6. Read output CSV content and encode as base64
+            with open(local_output_path, 'r', encoding='utf-8') as f:
+                csv_content = f.read()
+            output_csv_base64 = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+
+            # 7. Upload the output file to S3
             output_key = f"{user_id}/{training_job_id}/output/{output_file_name}"
             s3_client.upload_file(str(local_output_path), bucket_name, output_key)
             output_s3_path = f"s3://{bucket_name}/{output_key}"
+            script_s3_path = f"s3://{bucket_name}/{script_key}"
 
-            # 6. Update job status to completed
+            # 8. Update job status to completed
             await self.job_manager.update_job_status(
                 inference_job_id,
                 JobStatus.COMPLETED,
@@ -906,11 +937,23 @@ class CSVConversionWorkflow:
                 progress_details={"output_path": output_s3_path},
             )
             self.logger.info(f"Inference job {inference_job_id} completed successfully. Output at {output_s3_path}")
+            
+            # 9. Return inference result with base64 content
+            return {
+                "success": True,
+                "job_id": inference_job_id,
+                "python_script_base64": python_script_base64,
+                "output_csv_base64": output_csv_base64,
+                "output_s3_path": output_s3_path,
+                "script_s3_path": script_s3_path,
+                "execution_time": result.stdout,  # Can add timing if needed
+            }
 
         except Exception as e:
             error_msg = f"An unexpected error occurred during inference: {e}"
             self.logger.error(error_msg)
             await self._handle_job_failure(inference_job_id, "Inference failed", error_msg)
+            return {"success": False, "error": error_msg, "job_id": inference_job_id}
         finally:
             if temp_dir:
                 temp_dir.cleanup()

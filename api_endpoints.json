@@ -59,7 +59,7 @@
                     "CSV Converter"
                 ],
                 "summary": "Run Inference Job",
-                "description": "Runs an inference job using a specified trained model and input file.",
+                "description": "Runs an inference job using a specified trained model and input file. Returns the Python script and output CSV as base64 encoded strings.",
                 "operationId": "run_inference_job_api_v1_inference_run_post",
                 "requestBody": {
                     "content": {
@@ -72,12 +72,12 @@
                     "required": true
                 },
                 "responses": {
-                    "202": {
+                    "200": {
                         "description": "Successful Response",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/ConversionJobResponse"
+                                    "$ref": "#/components/schemas/InferenceResponse"
                                 }
                             }
                         }
@@ -477,6 +477,96 @@
                 ],
                 "title": "InferenceRequest",
                 "description": "Request model for starting an inference job."
+            },
+            "InferenceResponse": {
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "title": "Job Id"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/JobStatus"
+                    },
+                    "input_file": {
+                        "type": "string",
+                        "title": "Input File"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "title": "Client Id"
+                    },
+                    "mode": {
+                        "$ref": "#/components/schemas/OperationMode"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "message": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "python_script_base64": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Python Script Base64",
+                        "description": "Base64 encoded Python script content used for inference"
+                    },
+                    "output_csv_base64": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Output Csv Base64",
+                        "description": "Base64 encoded output CSV file content"
+                    },
+                    "output_s3_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Output S3 Path",
+                        "description": "S3 path where the output CSV is stored"
+                    },
+                    "script_s3_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Script S3 Path",
+                        "description": "S3 path where the Python script is stored"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "job_id",
+                    "status",
+                    "input_file",
+                    "client_id",
+                    "mode",
+                    "message"
+                ],
+                "title": "InferenceResponse",
+                "description": "Enhanced response model for inference job completion."
             },
             "JobStatus": {
                 "type": "string",

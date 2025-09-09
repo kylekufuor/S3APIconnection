@@ -11,6 +11,7 @@ from core.workflow_executor import workflow_executor
 from models.schemas import (
     ConversionJobResponse,
     InferenceRequest,
+    InferenceResponse,
     JobStatus,
     OperationMode,
     TrainingJobRequest,
@@ -88,17 +89,17 @@ async def start_training_job(request: TrainingJobRequest) -> ConversionJobRespon
 
 @router.post(
     "/inference/run",
-    response_model=ConversionJobResponse,
-    status_code=status.HTTP_202_ACCEPTED,
+    response_model=InferenceResponse,
+    status_code=status.HTTP_200_OK,
     summary="Run Inference Job",
-    description="Runs an inference job using a specified trained model and input file.",
+    description="Runs an inference job using a specified trained model and input file. Returns the Python script and output CSV as base64 encoded strings.",
 )
-async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
+async def run_inference_job(request: InferenceRequest) -> InferenceResponse:
     """
-    Starts a new inference job:
+    Runs an inference job and waits for completion:
     1. Creates a new job with a unique ID for tracking.
-    2. Kicks off the background processing workflow for inference.
-    3. Returns the job information.
+    2. Executes the inference workflow synchronously.
+    3. Returns the job information along with base64 encoded Python script and output CSV.
     """
     try:
         # Create a new job for this inference task
@@ -112,28 +113,44 @@ async def run_inference_job(request: InferenceRequest) -> ConversionJobResponse:
             description=f"Inference for job {request.job_id}",
         )
 
-        # Submit the inference workflow to the process pool
+        # Execute the inference workflow and wait for completion
         from core.workflow import csv_conversion_workflow
         
-        # For inference, we still need to use the original workflow since it's a different method
-        # This could be refactored later to also use the process pool
-        asyncio.create_task(
-            csv_conversion_workflow.run_inference_job(
-                inference_job_id=inference_job_id,
-                user_id=request.user_id,
-                training_job_id=request.job_id,
-                input_file=request.input_file,
-            )
+        # Run inference job synchronously to get the results
+        inference_result = await csv_conversion_workflow.run_inference_job(
+            inference_job_id=inference_job_id,
+            user_id=request.user_id,
+            training_job_id=request.job_id,
+            input_file=request.input_file,
         )
 
-        return ConversionJobResponse(
-            job_id=inference_job_id,
-            status=JobStatus.PENDING,
-            input_file=request.input_file,
-            client_id=request.user_id,
-            mode=OperationMode.INFERENCE,
-            message="Inference job created successfully. Processing will begin shortly.",
-        )
+        if inference_result["success"]:
+            return InferenceResponse(
+                job_id=inference_job_id,
+                status=JobStatus.COMPLETED,
+                input_file=request.input_file,
+                client_id=request.user_id,
+                mode=OperationMode.INFERENCE,
+                message="Inference job completed successfully.",
+                python_script_base64=inference_result.get("python_script_base64"),
+                output_csv_base64=inference_result.get("output_csv_base64"),
+                output_s3_path=inference_result.get("output_s3_path"),
+                script_s3_path=inference_result.get("script_s3_path"),
+            )
+        else:
+            # Return failed response but include script content if available
+            return InferenceResponse(
+                job_id=inference_job_id,
+                status=JobStatus.FAILED,
+                input_file=request.input_file,
+                client_id=request.user_id,
+                mode=OperationMode.INFERENCE,
+                message=f"Inference job failed: {inference_result.get('error', 'Unknown error')}",
+                python_script_base64=inference_result.get("python_script_base64"),
+                output_csv_base64=inference_result.get("output_csv_base64"),
+                output_s3_path=inference_result.get("output_s3_path"),
+                script_s3_path=inference_result.get("script_s3_path"),
+            )
     except Exception as e:
         logger.error(f"Failed to start inference job: {e}")
         raise HTTPException(

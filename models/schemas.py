@@ -192,6 +192,31 @@ class InferenceRequest(BaseModel):
     input_file: str = Field(description="S3 URI, URL or Base64 file content encoded")
 
 
+class InferenceResponse(BaseModelWithConfig):
+    """Enhanced response model for inference job completion."""
+
+    job_id: str
+    status: JobStatus
+    input_file: str
+    client_id: str
+    mode: OperationMode
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    message: str
+    # Enhanced fields with base64 content
+    python_script_base64: Optional[str] = Field(
+        default=None, description="Base64 encoded Python script content used for inference"
+    )
+    output_csv_base64: Optional[str] = Field(
+        default=None, description="Base64 encoded output CSV file content"
+    )
+    output_s3_path: Optional[str] = Field(
+        default=None, description="S3 path where the output CSV is stored"
+    )
+    script_s3_path: Optional[str] = Field(
+        default=None, description="S3 path where the Python script is stored"
+    )
+
+
 class JobMetadata(BaseModelWithConfig):
     """Metadata for a training job to be saved in S3."""
 

@@ -77,8 +77,8 @@ def test_training_endpoint():
 
 
 def test_inference_endpoint():
-    """Tests the /api/v1/inference/run endpoint."""
-    print("--- Starting API Test for /api/v1/inference/run ---")
+    """Tests the enhanced /api/v1/inference/run endpoint that returns base64 content."""
+    print("--- Starting API Test for Enhanced /api/v1/inference/run ---")
 
     # --- Prepare Payload ---
     # This job_id should be from a completed training job
@@ -107,12 +107,38 @@ def test_inference_endpoint():
         # --- Print Response ---
         print(f"\nResponse Status Code: {response.status_code}")
 
-        if response.status_code == 202:
-            print("\nSuccessfully started inference job!")
+        if response.status_code == 200:  # Changed from 202 to 200
+            print("\nInference job completed successfully!")
+            response_data = response.json()
             print("Response JSON:")
-            print(json.dumps(response.json(), indent=2))
+            print(json.dumps(response_data, indent=2))
+            
+            # Test base64 fields
+            script_base64 = response_data.get('python_script_base64')
+            csv_base64 = response_data.get('output_csv_base64')
+            
+            if script_base64:
+                print("\n✅ Python script base64 content received")
+                try:
+                    script_content = base64.b64decode(script_base64).decode('utf-8')
+                    print(f"Script preview (first 200 chars): {script_content[:200]}...")
+                except Exception as e:
+                    print(f"❌ Error decoding script base64: {e}")
+            else:
+                print("\n❌ No python_script_base64 field in response")
+                
+            if csv_base64:
+                print("\n✅ Output CSV base64 content received")
+                try:
+                    csv_content = base64.b64decode(csv_base64).decode('utf-8')
+                    print(f"CSV content:\n{csv_content}")
+                except Exception as e:
+                    print(f"❌ Error decoding CSV base64: {e}")
+            else:
+                print("\n❌ No output_csv_base64 field in response")
+                
         else:
-            print("\nError starting inference job.")
+            print("\nError running inference job.")
             try:
                 print("Error Response JSON:")
                 print(json.dumps(response.json(), indent=2))
