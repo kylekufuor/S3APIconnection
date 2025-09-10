@@ -234,6 +234,46 @@ class PlannerAgent(BaseCSVAgent):
         9. QUOTE-AWARE PARSING: Never split fields by delimiter naïvely. Treat quoted delimiters as literal text. Prefer Python's csv module (csv.reader/csv.writer with quotechar='"', doublequote=True) or pandas read_csv with quotechar='"', escapechar=None, engine='python'.
         10. NO HARDCODED CONSTANTS: Do not hardcode dates/values from examples. Derive formats (e.g., date output pattern) from expected output sample; otherwise infer from data dynamically.
         11. ROBUST PANDAS IO: Use engine='python', on_bad_lines='skip', explicit sep if needed; handle dates and numeric types reliably.
+        12. DATETIME PLANNING: Apply specific datetime handling strategies as detailed below.
+        
+        DATETIME PLANNING GUIDELINES:
+        When analyzing datetime/date columns, apply these planning principles:
+        
+        1. **IDENTIFY DATE COLUMNS**: Look for columns with names like 'date', 'time', 'created', 'updated', 'purchase', 'order_date', etc.
+           or columns containing date-like values in samples ('2023-01-15', '01/15/2023', 'Jan 15, 2023').
+        
+        2. **ASSESS INPUT DATE FORMATS**: Examine sample data to determine:
+           - Are dates in a consistent format? (e.g., all 'YYYY-MM-DD')
+           - Are there mixed formats? (e.g., '2023-01-15' and '01/15/2023' in same column)
+           - Are there invalid or partial dates?
+           - Do dates include time components?
+        
+        3. **PLAN DATETIME PROCESSING STRATEGY** (ALWAYS INCLUDE utc=True):
+           - **For Mixed/Unknown Formats**: Plan to use robust parsing with format="mixed", errors="coerce", utc=True
+           - **For Consistent Formats**: Only specify exact format if user explicitly mentions it or sample shows 100% consistency
+           - **CRITICAL**: Always plan to include utc=True in pd.to_datetime() to prevent ".dt accessor" errors
+           - **For Invalid Dates**: Plan to handle gracefully with coercion to NaT
+           - **For Output Format**: Plan conversion to exact format shown in expected output sample
+        
+        4. **INCLUDE THESE STEPS FOR DATE COLUMNS** (utc=True is MANDATORY):
+           - Step: "Parse [column_name] using pd.to_datetime() with format='mixed', errors='coerce', utc=True"
+           - Step: "Handle invalid dates by coercing to NaT (utc=True ensures consistent datetime objects)"
+           - Step: "Convert [column_name] to output format '[format_from_expected_sample]' using .dt.strftime()"
+           - Step: "Validate datetime conversion success (utc=True prevents .dt accessor errors)"
+        
+        5. **DATE COLUMN PLANNING EXAMPLES** (Always mention utc=True):
+           - If input has mixed dates: "Parse date_column using pd.to_datetime() with format='mixed', errors='coerce', utc=True"
+           - If output needs specific format: "Format date_column as 'YYYY-MM-DD' using .dt.strftime() (utc=True ensures .dt works)"
+           - If dates may be invalid: "Use errors='coerce' and utc=True to handle invalid dates and prevent .dt accessor errors"
+        
+        6. **TIMEZONE CONSIDERATIONS AND utc=True REQUIREMENT**:
+           - Plan UTC normalization for consistent processing (utc=True is MANDATORY)
+           - utc=True prevents "Can only use .dt accessor with datetimelike values" errors
+           - utc=True ensures datetime objects instead of object dtype
+           - Note if output format should preserve or remove timezone info
+           - Plan timezone conversion if input/output have different timezone requirements
+           
+        **CRITICAL PLANNING RULE**: Every datetime parsing step MUST include utc=True parameter
         
         VALUE MAPPING ANALYSIS:
         {value_mapping_guide}
@@ -264,7 +304,15 @@ class PlannerAgent(BaseCSVAgent):
         C. Column Selection & Mapping:
            - Select only expected columns, rename/massage input columns to match expected names and order.
         D. Data Cleaning & Type Normalization:
-           - Enforce dtypes, parse/format dates to match expected samples; handle numbers and signs.
+           - Enforce dtypes for non-date columns
+           - **DATETIME HANDLING**: For date/datetime columns, use robust parsing strategy:
+             * ALWAYS use pd.to_datetime() with utc=True (prevents .dt accessor errors)
+             * Use format="mixed", errors="coerce", utc=True for mixed/unknown formats
+             * Use specific format only if user explicitly provides it or data is 100% consistent
+             * CRITICAL: utc=True ensures datetime objects and allows .dt.strftime() to work
+             * Convert to desired output format using .dt.strftime() after successful parsing
+             * Handle timezone normalization and invalid date coercion
+           - Handle numbers and signs for numeric columns
         E. Row-level Rules (post-load in pandas):
            - Do NOT drop rows in pre-clean unless the line is clearly non-record.
            - After loading, drop rows only if required columns are null/invalid.
@@ -318,26 +366,13 @@ class PlannerAgent(BaseCSVAgent):
         output_cols = set(output_sample[0].keys()) if output_sample else set()
         common_cols = input_cols & output_cols
 
+        unique_common_examples = set()
         for col in common_cols:
-            # Get unique values from input and output samples
-            input_values = set()
-            output_values = set()
-
-            for row in input_sample:
-                if col in row and row[col] is not None:
-                    input_values.add(str(row[col]))
-
-            for row in output_sample:
-                if col in row and row[col] is not None:
-                    output_values.add(str(row[col]))
-
-            # If there are different values, create a mapping
-            if input_values != output_values:
-                guide.append(f"Column '{col}':")
-                for input_val in sorted(input_values):
-                    # Find corresponding output value
-                    for output_val in sorted(output_values):
-                        guide.append(f"  '{input_val}' -> '{output_val}'")
+            guide.append(f"Column '{col}':")
+            for input_value, output_value in zip(input_sample, output_sample):
+                if (input_value[col], output_value[col]) not in unique_common_examples:
+                    unique_common_examples.add((input_value[col], output_value[col]))
+                    guide.append(f"  '{input_value[col]}' -> '{output_value[col]}'")
 
         # Look for new columns in output
         new_cols = output_cols - input_cols

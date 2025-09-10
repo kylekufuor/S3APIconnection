@@ -175,6 +175,7 @@ class CoderAgent(BaseCSVAgent):
         5. **FOLLOW THE PLAN**: Implement each step precisely.
         6. **LEARN FROM FEEDBACK**: If feedback is provided, address the specific issues.
         7. **PANDAS COMPATIBILITY**: Use modern pandas API - avoid deprecated parameters like 'line_terminator'
+        8. **DATETIME HANDLING**: Use specific datetime conversion patterns as detailed below
         
         TECHNICAL REQUIREMENTS:
         1. The script MUST start with PEP 723 dependencies in this exact format:
@@ -203,6 +204,80 @@ class CoderAgent(BaseCSVAgent):
         - Use `sep=','` for explicit comma separation if needed
         - Use `encoding='utf-8'` for proper text encoding
         
+        DATETIME CONVERSION GUIDELINES:
+        When working with date/datetime columns, follow these specific patterns:
+        
+        1. **INPUT DATE PARSING** - Use this code for input date columns unless the user specifies an exact format:
+           ```python
+           df['date_column'] = pd.to_datetime(
+               df['date_column'],
+               format="mixed",
+               errors="coerce",
+               utc=True,  # CRITICAL: Always include utc=True
+           )
+           ```
+           
+           **CRITICAL**: `utc=True` is MANDATORY because:
+           - Ensures consistent datetime objects (prevents object dtype)
+           - Allows `.dt` accessor to work properly for formatting
+           - Prevents "Can only use .dt accessor with datetimelike values" error
+           - Handles multiple date formats in the same column
+           - Normalizes different timezones
+           - Invalid dates convert to NaT (Not a Time)
+        
+        2. **WHEN TO USE SPECIFIC FORMAT** - Only use a specific format if:
+           - The user explicitly mentions the exact format (e.g., "dates are in YYYY-MM-DD format")
+           - The user confirms all dates follow the same format
+           - Example with specific format:
+           ```python
+           df['date_column'] = pd.to_datetime(
+               df['date_column'],
+               format='%Y-%m-%d',  # Use the specific format provided
+               errors="coerce",
+               utc=True,  # ALWAYS include utc=True even with specific format
+           )
+           ```
+        
+        3. **OUTPUT DATE FORMATTING** - To convert processed datetime to desired output format:
+           ```python
+           df['date_column'] = df['date_column'].dt.strftime('%Y-%m-%d')  # Example format
+           ```
+           
+           Common format codes:
+           - '%Y-%m-%d' → '2023-01-15'
+           - '%m/%d/%Y' → '01/15/2023'
+           - '%d-%m-%Y' → '15-01-2023'
+           - '%Y-%m-%d %H:%M:%S' → '2023-01-15 14:30:00'
+           - '%B %d, %Y' → 'January 15, 2023'
+        
+        4. **DATETIME PROCESSING WORKFLOW** (ALWAYS INCLUDE utc=True):
+           ```python
+           # Step 1: Parse input dates (MUST include utc=True)
+           df['date_col'] = pd.to_datetime(
+               df['date_col'], 
+               format="mixed", 
+               errors="coerce", 
+               utc=True  # MANDATORY - prevents .dt accessor errors
+           )
+           
+           # Step 2: Perform any date operations if needed
+           # df['date_col'] = df['date_col'] + pd.DateOffset(days=30)  # Example
+           
+           # Step 3: Format to desired output (utc=True ensures .dt works)
+           df['date_col'] = df['date_col'].dt.strftime('%Y-%m-%d')  # Match expected output
+           ```
+        
+        5. **ERROR HANDLING FOR DATES**:
+           - ALWAYS use `errors="coerce"` to handle invalid dates gracefully
+           - ALWAYS use `utc=True` to ensure datetime objects and prevent `.dt` accessor errors
+           - Check for NaT (Not a Time) values if needed: `df['date_col'].isna()`
+           - Consider dropping rows with invalid dates only if they are critical
+           
+        **REMEMBER**: Every `pd.to_datetime()` call MUST include `utc=True` to prevent:
+           - "Can only use .dt accessor with datetimelike values" error
+           - Object dtype columns that break `.dt.strftime()` formatting
+           - Inconsistent datetime handling across different input formats
+        
         IMPLEMENTATION STRATEGY:
         - Implement a small `preclean_input_to_temp_csv` helper that:
           * Reads the input with Python's csv.reader to be quote-aware (quotechar='"', doublequote=True), so commas inside quotes are preserved.
@@ -210,7 +285,8 @@ class CoderAgent(BaseCSVAgent):
           * Keeps ALL rows from header to EOF; enforces exact field count by trimming extras; does not drop rows due to missing optional fields during pre-clean.
           * Writes a temporary clean CSV using csv.writer with quotechar='"', quoting=csv.QUOTE_MINIMAL; if input is already clean, return original path.
         - Load CSV with pandas using robust parameters (engine='python', on_bad_lines='skip', explicit sep when needed; quotechar='"').
-        - Select/map columns to the exact expected output schema (case-insensitive, ignore spaces/underscores; allow fuzzy matches); enforce dtypes; normalize dates to the required output format without hardcoded constants.
+        - Select/map columns to the exact expected output schema (case-insensitive, ignore spaces/underscores; allow fuzzy matches); enforce dtypes; normalize dates using the datetime conversion guidelines above.
+        - **DATETIME PROCESSING**: For date/datetime columns, use `pd.to_datetime()` with `format="mixed"`, `errors="coerce"`, `utc=True` unless user specifies exact format. Then use `.dt.strftime()` to match expected output format.
         - Pre-clean tolerance: do not discard rows due to field count alone; keep rows meeting tolerance (>=50% non-empty OR all required present); fill missing with NaN for pandas.
         - Numeric conversion safety: strip regular and non-breaking spaces, then convert; only drop rows if a required field fails conversion irreparably.
         - Null policy: use the plan-provided required_columns vs optional_columns lists (do NOT hardcode). Drop rows only if required columns are missing/invalid; allow optional columns to be empty.
