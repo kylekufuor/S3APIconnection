@@ -11,6 +11,7 @@ crewai-tools>=0.13.1
 
 # Data processing
 pandas>=2.1.0
+chardet>=5.2.0
 
 # File handling
 uv
