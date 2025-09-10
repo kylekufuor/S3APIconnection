@@ -52,7 +52,7 @@ async def validate_csv_file(file_path: Path) -> Tuple[bool, Optional[str]]:
 def _read_text_lines(file_path: Path, max_lines: int = 200) -> List[str]:
     """Read first max_lines of a text file safely with multiple encoding attempts."""
     encodings_to_try = ["utf-8", "latin-1", "iso-8859-1", "windows-1252", "utf-16", "ascii"]
-    
+
     for encoding in encodings_to_try:
         try:
             with open(file_path, "r", encoding=encoding, errors="replace") as f:
@@ -64,13 +64,13 @@ def _read_text_lines(file_path: Path, max_lines: int = 200) -> List[str]:
         except Exception as e:
             logger.debug(f"Failed to read {file_path.name} with {encoding}: {e}")
             continue
-    
+
     # Final fallback: try binary mode and decode with errors='ignore'
     try:
         with open(file_path, "rb") as f:
             content = f.read()
             # Try to decode as utf-8 with ignore errors
-            text = content.decode('utf-8', errors='ignore')
+            text = content.decode("utf-8", errors="ignore")
             lines = text.splitlines()
             logger.warning(f"Used binary mode with error ignore for {file_path.name}")
             return lines[:max_lines]
@@ -208,45 +208,45 @@ def _detect_file_encoding(file_path: Path) -> str:
     try:
         # Try to import chardet for better detection
         import chardet
-        
-        with open(file_path, 'rb') as f:
+
+        with open(file_path, "rb") as f:
             # Read first 10KB to detect encoding
             sample = f.read(10240)
             result = chardet.detect(sample)
-            encoding = result.get('encoding', 'utf-8')
-            confidence = result.get('confidence', 0)
-            
+            encoding = result.get("encoding", "utf-8")
+            confidence = result.get("confidence", 0)
+
             logger.debug(f"Detected encoding for {file_path.name}: {encoding} (confidence: {confidence:.2f})")
-            
+
             # Fallback to common encodings if confidence is low
             if confidence < 0.7:
                 logger.warning(f"Low encoding confidence ({confidence:.2f}), using latin-1 fallback")
-                return 'latin-1'  # More permissive fallback
-                
-            return encoding or 'utf-8'
-            
+                return "latin-1"  # More permissive fallback
+
+            return encoding or "utf-8"
+
     except ImportError:
         # chardet not available, use file content heuristics
         logger.debug(f"chardet not available, using heuristic encoding detection for {file_path.name}")
         try:
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 sample = f.read(1024)
-                
+
             # Simple heuristic: if we can decode as UTF-8, use it
             try:
-                sample.decode('utf-8')
-                return 'utf-8'
+                sample.decode("utf-8")
+                return "utf-8"
             except UnicodeDecodeError:
                 # UTF-8 failed, try latin-1 (most permissive)
-                return 'latin-1'
-                
+                return "latin-1"
+
         except Exception as e:
             logger.warning(f"Heuristic encoding detection failed for {file_path.name}: {e}")
-            return 'latin-1'
-            
+            return "latin-1"
+
     except Exception as e:
         logger.warning(f"Encoding detection failed for {file_path.name}: {e}")
-        return 'latin-1'  # Safe fallback
+        return "latin-1"  # Safe fallback
 
 
 async def analyze_csv_structure(file_path: Path) -> Dict[str, Any]:
@@ -264,17 +264,17 @@ async def analyze_csv_structure(file_path: Path) -> Dict[str, Any]:
         raw_quality = analyze_raw_text_quality(file_path)
 
         loop = asyncio.get_event_loop()
-        
+
         # Detect file encoding for robust reading
         encoding = _detect_file_encoding(file_path)
-        
+
         # Try robust pandas read with hints from raw analysis
         read_kwargs: Dict[str, Any] = {
             "encoding": encoding,
             "engine": "python",  # More robust than C engine
             "on_bad_lines": "skip",
         }
-        
+
         if raw_quality.get("quality_label") != "clean":
             # If we have a header index guess, attempt to skip prelude
             header_idx = raw_quality.get("header_index_guess")
@@ -287,12 +287,12 @@ async def analyze_csv_structure(file_path: Path) -> Dict[str, Any]:
 
         # Try multiple encoding strategies if the first fails
         def try_read_csv():
-            encodings_to_try = [encoding, 'utf-8', 'latin-1', 'iso-8859-1', 'windows-1252']
-            
+            encodings_to_try = [encoding, "utf-8", "latin-1", "iso-8859-1", "windows-1252"]
+
             for enc in encodings_to_try:
                 try:
                     kwargs = read_kwargs.copy()
-                    kwargs['encoding'] = enc
+                    kwargs["encoding"] = enc
                     logger.debug(f"Trying to read {file_path.name} with encoding: {enc}")
                     df = pd.read_csv(file_path, **kwargs)
                     logger.info(f"Successfully read {file_path.name} using {enc} encoding")
@@ -303,17 +303,17 @@ async def analyze_csv_structure(file_path: Path) -> Dict[str, Any]:
                 except Exception as e:
                     logger.debug(f"Unexpected error with {enc}: {e}")
                     continue
-            
+
             # Final fallback: try with errors='ignore'
             try:
                 kwargs = read_kwargs.copy()
-                kwargs['encoding'] = 'utf-8'
-                kwargs['encoding_errors'] = 'ignore'
+                kwargs["encoding"] = "utf-8"
+                kwargs["encoding_errors"] = "ignore"
                 logger.warning(f"Using fallback encoding with error ignore for {file_path.name}")
                 return pd.read_csv(file_path, **kwargs)
             except Exception as e:
                 raise Exception(f"Could not read CSV file with any encoding strategy: {e}")
-        
+
         df = await loop.run_in_executor(None, try_read_csv)
 
         # Basic structure info
@@ -812,7 +812,7 @@ async def update_job_metadata_to_s3(
                 metadata = JobMetadata.model_validate_json(metadata_content)
 
                 metadata.job_status = status
-                metadata.finished_at = job["completed_at"]
+                metadata.finished_at = job.get("completed_at", None)
 
                 if progress_details and "script_path" in progress_details:
                     metadata.script_path = progress_details["script_path"]

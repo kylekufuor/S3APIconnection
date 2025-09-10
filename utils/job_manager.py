@@ -1,14 +1,13 @@
 """Job management utilities for handling conversion jobs."""
 
-import asyncio
 import json
+from asyncio import Lock
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import aiofiles
-from asyncio import Lock
 from loguru import logger
 
 from core.config import settings
@@ -22,7 +21,7 @@ class JobManager:
     def __init__(self) -> None:
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._write_lock = Lock()  # Write lock for modifying jobs
-        self._read_lock = Lock()   # Read lock for accessing jobs
+        self._read_lock = Lock()  # Read lock for accessing jobs
         self._jobs_file = Path("temp/jobs.json")
         self._load_jobs()
 
@@ -178,7 +177,7 @@ class JobManager:
         request: TrainingJobRequest,
     ) -> Dict[str, Any]:
         """Create a training job record INSTANTLY without S3 operations.
-        
+
         S3 operations will be handled by the background worker process.
         This enables sonic-speed API responses (<100ms).
         """
@@ -187,10 +186,11 @@ class JobManager:
             if request.job_id:
                 job_id = request.job_id
                 logger.info(f"🔄 Job replacement requested for existing job: {job_id}")
-                
+
                 # Delete existing job folder for replacement
                 try:
                     from utils.file_handlers import delete_and_replace_job_folder
+
                     await delete_and_replace_job_folder(request.user_id, job_id)
                     logger.info(f"✅ Existing job {job_id} folder deleted - ready for replacement")
                 except Exception as e:
@@ -198,10 +198,10 @@ class JobManager:
                     raise Exception(f"Failed to replace existing job: {e}")
             else:
                 job_id = str(uuid4())
-                
+
             user_id = request.user_id
             bucket_name = settings.aws_bucket_name
-            
+
             # Fast job record creation - NO S3 operations!
             job_data: Dict[str, Any] = {
                 "job_id": job_id,
@@ -216,11 +216,7 @@ class JobManager:
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
                 "current_step": "Job created - initializing S3 setup",
-                "progress_details": {
-                    "phase": "initializing",
-                    "step": "job_created",
-                    "progress_percent": 0
-                },
+                "progress_details": {"phase": "initializing", "step": "job_created", "progress_percent": 0},
                 "error_message": None,
                 "generated_script": None,
                 "generated_script_path": None,
@@ -231,10 +227,10 @@ class JobManager:
                     "job_title": request.job_title,
                     "owner": request.owner,
                     "user_id": user_id,
-                    "bucket_name": bucket_name
-                }
+                    "bucket_name": bucket_name,
+                },
             }
-            
+
             self._jobs[job_id] = job_data
             await self._save_jobs()  # Fast local save only
             logger.info(f"⚡ Created FAST training job: {job_id} for user: {user_id} (S3 ops deferred)")
@@ -275,8 +271,8 @@ class JobManager:
             if status in [JobStatus.COMPLETED, JobStatus.FAILED] and job["mode"] == OperationMode.TRAINING.value:
                 job["completed_at"] = datetime.now(timezone.utc)
 
-                # Update S3 metadata
-                await update_job_metadata_to_s3(job, job_id, status, progress_details)
+            # Update S3 metadata
+            await update_job_metadata_to_s3(job, job_id, status, progress_details)
 
             await self._save_jobs()  # Save to persistent storage
             logger.info(f"Updated job {job_id} status to {status}")
